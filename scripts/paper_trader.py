@@ -131,6 +131,47 @@ class AlpacaExecutionEngine:
         except Exception as e:
             print(f"   ❌ Error writing to Excel ledger: {e}")
 
+    def log_comprehensive_feature_snapshot(
+        self,
+        ticker: str,
+        features_df: pd.DataFrame,
+        p_trap: float,
+        p_whale: float,
+        action: str,
+        extra_metadata: dict = None
+    ):
+        """Streams live feature vectors and Oracle probabilities to a local Parquet store for v7.0."""
+        store_dir = PROJECT_ROOT / "data" / "training_store"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = store_dir / "oracle_v7_live_training_store.parquet"
+
+        record = features_df.copy()
+        record['Ticker'] = ticker
+        record['Sector_Name'] = self.sector_map.get(ticker, 'Unknown')
+        record['Watchlist_Score'] = 3
+        record['Direction'] = 'LONG'
+        record['P_Trap'] = p_trap
+        record['P_Whale'] = p_whale
+        record['Action_Taken'] = action
+        record['Capture_Time'] = datetime.now(NY_TZ).strftime('%Y-%m-%d %H:%M:%S')
+
+        if extra_metadata:
+            for k, v in extra_metadata.items():
+                record[k] = v
+
+        df_new = pd.DataFrame(record)
+
+        if parquet_path.exists():
+            try:
+                df_existing = pd.read_parquet(parquet_path)
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            except Exception:
+                df_combined = df_new
+        else:
+            df_combined = df_new
+
+        df_combined.to_parquet(parquet_path, index=False)
+
     def print_startup_banner(self):
         print("=" * 85)
         print("🤖 SID EQUITIES LONG AUTONOMOUS TRADING ENGINE — STARTUP OVERVIEW")
@@ -424,6 +465,7 @@ class AlpacaExecutionEngine:
                 if p_trap >= self.trap_thresh:
                     print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
                     blocked_count += 1
+                    self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
                     continue
 
                 dollar_risk = self.sizing_risk_base * risk_tier
@@ -443,6 +485,11 @@ class AlpacaExecutionEngine:
                     )
                     self.trading_client.submit_order(order_req)
                     approved_count += 1
+
+                    self.log_comprehensive_feature_snapshot(
+                        t, features, p_trap, p_whale, action="BOUGHT",
+                        extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
+                    )
 
                     exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
 
