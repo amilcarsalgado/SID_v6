@@ -1,0 +1,235 @@
+Training Data Collection - 03Sep2026
+
+```python
+# Let's inspect all columns of Groomed_Training_Data_v2_Shorts.xlsx to see everything that went into v6.0
+import pandas as pd
+df = pd.read_excel('Groomed_Training_Data_v2_Shorts.xlsx')
+print("All columns in v6.0 training data:")
+for col in df.columns:
+    print(f"- {col}")
+
+
+```
+
+```text
+All columns in v6.0 training data:
+- Ticker
+- Sector_Name
+- Watchlist_Score
+- Direction
+- Applied_Risk_Pct
+- RSI_Extreme_Value
+- Entry_Date
+- Entry_Price
+- Entry_EMA_200
+- Dist_From_EMA_%
+- Entry_RVOL
+- Entry_ATR
+- Exit_Date
+- Hold_Duration
+- Exit_Price
+- Exit_RSI
+- Exit_Reason
+- Net_PnL (After Fees)
+- Account_Equity
+- MFE_Price
+- MFE_PnL
+- Stop_Loss_Hit_Date
+- Price_at_RSI_50
+- PnL_at_RSI_50
+- Price_at_RSI_45
+- PnL_at_RSI_45
+- Price_at_RSI_40
+- PnL_at_RSI_40
+- Price_at_RSI_35
+- PnL_at_RSI_35
+- Price_at_RSI_30
+- PnL_at_RSI_30
+- Days_To_Earnings
+- Days_Since_Earnings
+- Next_Beat_Miss
+- Next_EPS_Surprise_Pct
+
+
+```
+
+If we are throwing the kitchen sink at Oracle v7.0 and letting gradient boosting sort out the signal from the noise, we cannot stop at technicals and fundamental earnings surprises.
+
+The v6.0 dataset relied purely on structural price action, volume, and earnings dates. To build a true alpha engine for v7.0, we need to log and feed layers that capture macro regime shifts, sentiment velocity, and cross-asset institutional footprints.
+
+### 1. Geopolitical News & Macro Sentiment Vector (The Missing Link)
+
+You called this out directly, and it is the biggest blind spot for pure technical models. A perfect swing setup will get shredded instantly if a sudden tariff announcement, trade war escalation, or Middle East supply chain shock hits the wire.
+
+* **News Sentiment Score (-1.0 to +1.0):** Real-time rolling sentiment of breaking news headlines specifically tagged to the ticker and its sector over the preceding 24–72 hours.
+* **Macro Regime Index:** Daily composite score tracking yield curve slopes (2s10s spread), USD index velocity (DXY), and VEX/VIX volatility shifts. We want the Oracle to know *when* the broader macro tide is hostile to long swings.
+
+### 2. Order Book Microstructure & Institutional Flow
+
+Hourly bars tell us what happened, but they miss the internal plumbing of execution pressure.
+
+* **Intraday Volume-Weighted Average Price (VWAP) Distance:** How far is the entry price relative to the session or multi-session VWAP? Institutional accumulation happens quietly around VWAP; chasing too far above it increases trap probability.
+* **Bid-Ask Spread & Order Book Imbalance:** Slippage eats swing trading alive. Tracking the rolling average spread and buy/sell order book depth at the moment of entry prevents entering illiquid traps.
+
+### 3. Cross-Asset & Sector Relative Strength
+
+Stocks rarely move in a vacuum; they get dragged by their sector boats or broad market tides.
+
+* **Sector Relative Strength Ratio:** The rolling 14-period performance of the stock’s sector ETF (e.g., XLK, XLE, XLF) versus the S&P 500 ($SPY$). If the stock is trying to bounce while its sector is leaking institutional capital, the Oracle should flag it.
+* **Beta to Index:** Dynamic trailing 30-day beta to SPY/QQQ so the model understands the volatility amplification of the candidate.
+
+### 4. Comprehensive Path Dynamics & Excursion Metrics (The v6.0 Superpower)
+
+Notice how your v6.0 training data includes columns like `MFE_Price` (Maximum Favorable Excursion), `Hold_Duration`, and multi-tier price/PnL paths (`Price_at_RSI_50`, `Price_at_RSI_45`, etc.).
+
+* For v7.0, every single trade captured live in Parquet must track its **MFE** and **MAE** (Maximum Adverse Excursion) in real time while open.
+* This teaches the Oracle not just *when* to enter, but how much heat a trade typically takes before reaching its RSI target.
+
+---
+
+### The Architecture for v7.0 Collection
+
+To collect all of this without slowing down your hourly daemon, we can structure the Parquet feature store as a wide-format matrix. Every time `paper_trader.py` runs a scan, it appends a row containing:
+
+1. **Identifiers:** Ticker, Sector, Watchlist Score.
+2. **Technical State (v6.0 Core):** RSI, RVOL, ATR, Dist from EMA-200, Extreme RSI.
+3. **Fundamental Context:** Days to/since earnings, last EPS surprise, beat/miss flag.
+4. **New Macro & Sentiment Tier:** Geopolitical sentiment score, DXY momentum, sector relative strength.
+5. **Execution & Path Labels (Populated upon trade closure):** Realized PnL, MFE, MAE, Hold Duration, Exit Reason.
+
+By logging *both* taken trades and vetoed signals into this wide schema, Oracle v7.0 will train on an uncompromising,
+high-dimensional dataset that bridges the gap between backtested theory and live market reality.
+
+We pull it programmatically through lightweight, highly targeted API integrations so your hourly daemon never bogs down. Since you already use Python for your automation scripts, we can tap into robust, low-cost (or free) data providers to feed the Oracle v7.0 training store automatically.
+
+The ingestion pipeline maps directly to these data sources:
+
+* **Geopolitical & News Sentiment**: We can query free or low-cost NLP financial news APIs (like **Alpha Vantage News Sentiment**, **NewsAPI**, or lightweight RSS aggregators parsing Reuters/Bloomberg feeds) and run a quick Hugging Face sentiment pipeline or VADER scoring on headlines matching the ticker and sector for the last 24 hours.
+* **Macro Regimes (Yields & DXY)**: Alpaca's historical and real-time data client doesn't just handle stocks—you can pull hourly bars for macro ETFs like **TLT** (20+ Year Treasury Bond), **UUP** (US Dollar Index tracking fund), and **VXX** (Volatility) to compute yield slopes and dollar velocity natively inside your existing loop.
+* **Order Book & Microstructure**: Alpaca provides a quotes/trades endpoint (`StockLatestQuoteRequest`). While your hourly bars capture the price action, we can query the prevailing bid-ask spread at the exact minute of entry.
+* **Sector Relative Strength**: We can map each stock ticker to its sector ETF (e.g., XLK, XLF, XLE) using your existing `sector_map` dictionary, pull its hourly bars alongside the stock, and compute a rolling 14-period relative strength ratio (`Stock_Close / ETF_Close`) on the fly.
+* **Path Excursions (MFE/MAE)**: This data is generated completely internally. As a trade sits open in your portfolio, your daemon tracks its high and low watermarks every hour, automatically calculating Maximum Favorable Excursion and Maximum Adverse Excursion when the trade closes.
+
+By structuring your live Parquet store to accept these columns right alongside your core technicals, your automated engine builds a massive, institution-grade dataset in the background while you sleep or work.
+
+Where to start:
+
+We start by locking down the infrastructure for Oracle v7.0 so that every trade, signal, and veto starting today gets captured in that wide-format Parquet store.
+
+Since you are running `paper_trader.py` live right now, our immediate action items for tonight are broken down below:
+
+**1. Upgrade the Live Engine Logger**
+
+* Update `paper_trader.py` to write out the full feature vector (including technicals, earnings proximity, sector mapping, and macro states) to `data/training_store/oracle_v7_live_training_store.parquet` whenever a signal is evaluated or vetoed.
+
+**2. Backfill Historical Technical/Macro Data (2021–2026)**
+
+* Write a multi-year historical ingestion script using Alpaca's historical client and macro proxies (TLT, UUP) to rebuild the baseline 36-column training matrix, merging it cleanly so v7.0 has a massive multi-year foundation.
+
+**3. Initialize the Real-Time MFE/MAE Tracker**
+
+* Add logic to track open trade excursions hour-by-hour so the Oracle learns exact path dynamics, rather than just binary entry/exit results.
+
+Whenever you're at your terminal, let me know if you want to tackle modifying `paper_trader.py` first or build the historical data backfill script!
+
+
+Updates that will take place with each Candle Scan:
+
+With every active hourly scan executed by the upgraded `paper_trader.py` daemon, the following local files are created, updated, or modified:
+
+* **`data/training_store/oracle_v7_live_training_store.parquet`** *(Created / Updated)*: This wide-format Parquet dataset captures every evaluated signal during the hourly scan. It logs the full feature vector alongside metadata, model probabilities ($P(\text{Trap})$ and $P(\text{Whale}$)), and the explicit decision (`BOUGHT` or `VETOED`), ensuring the training store accumulates un-biased live data for Oracle v7.0.
+* **`data/alpaca_state.json`** *(Updated)*: Stores active position metadata (such as entry times, initial RSI slopes, calculated stop-loss levels, and dynamic exit rules like `RSI_50` or `RSI_60_WHALE`) and records burned regime IDs to prevent duplicate entries in the same structural window.
+* **`SIM_Results/Alpaca_Live_Ledger.xlsx`** *(Updated upon trade closure)*: When an active position hits its target RSI threshold and the daemon autonomously closes it, this master Excel ledger updates automatically with a new row under the `Closed_Trades` sheet, logging realized P&L, return percentage, and trade duration.
+
+As of 03Sep2026 here is what we are capturing into the parquet file for ML training:
+
+The comprehensive feature vector collected and streamed into `data/training_store/oracle_v7_live_training_store.parquet` with every hourly scan consists of the following 13 primary data points and metadata fields:
+
+* **`Ticker`**: The specific asset symbol being evaluated or traded.
+* **`Sector_Name`**: The industry sector mapping associated with the ticker.
+* **`Watchlist_Score`**: The underlying screening priority score assigned to the ticker.
+* **`Direction`**: The explicit trade direction category (**LONG**).
+* **`RSI_Extreme_Value`**: The localized extreme RSI low tracked since the structural regime start.
+* **`Dist_From_EMA_%`**: The percentage distance of the current entry price from the 200-period Exponential Moving Average.
+* **`Entry_RVOL`**: The relative volume multiplier compared against the 20-period moving average.
+* **`Entry_ATR`**: The 14-period Average True Range volatility measure.
+* **`Days_To_Earnings`**: The precise trading or calendar day count leading up to the next upcoming earnings release.
+* **`Days_Since_Earnings`**: The precise day count elapsed since the most recent earnings announcement.
+* **`Entry_Month`**: The numeric calendar month of the entry timestamp.
+* **`Risk_Tier`**: The risk allocation tier applied to the trade setup (e.g., 0.02 for aggressive or 0.005 for tier setups).
+* **`P_Trap` & `P_Whale**`: The real-time classification probability scores generated by the Oracle model.
+* **`Action_Taken`**: The definitive engine decision recorded for the scan (**BOUGHT** or **VETOED**).
+* **`Capture_Time`**: The exact Eastern Time timestamp of the evaluation or execution.
+
+
+Kitchen Sink List 2DO list:
+
+**Oracle v7.0 "Kitchen Sink" Master 2DO List**
+
+* **Macro Regime Index**
+* **What it is & What it means:** A composite tracking yield curve slopes (2s10s spread), US Dollar Index (DXY) velocity, and VEX/VIX volatility shifts via proxy ETFs (`TLT`, `UUP`, `VXX`), measuring systemic macro stress and institutional risk appetite.
+* **Source & Cost:** Alpaca historical and real-time bars; **Free** (included in existing API subscription).
+* **Decision Impact & Timeline:** Acts as a macro gatekeeper to scale down risk or veto entries when systemic stress spikes; can be implemented **right away** in `paper_trader.py`.
+* **Write Trigger:** Written to the Parquet file during every hourly scan evaluation for both taken trades and vetoed signals.
+
+
+* **Sector Relative Strength Ratio**
+* **What it is & What it means:** The rolling 14-period performance ratio of the stock’s sector ETF (e.g., `XLK`, `XLF`) relative to `SPY`, tracking institutional capital rotation.
+* **Source & Cost:** Derived via Alpaca sector ETF maps; **Free**.
+* **Decision Impact & Timeline:** Ensures the engine only buys bounces in leading sectors and avoids hostile headwinds; can be used **right away**.
+* **Write Trigger:** Written during the hourly scan evaluation for every scanned candidate.
+
+
+* **Order Book Microstructure & Spread**
+* **What it is & What it means:** The prevailing bid-ask spread and order book depth imbalance queried at entry, capturing execution friction and market maker inventory pressure.
+* **Source & Cost:** Alpaca quotes endpoints (`StockLatestQuoteRequest`); **Free**.
+* **Decision Impact & Timeline:** Prevents entering trades with toxic spreads where slippage destroys edge; can be integrated **right away** (predictive edge compounds over time).
+* **Write Trigger:** Written immediately upon trade execution approval (`Action_Taken = 'BOUGHT'`).
+
+
+* **Geopolitical News Sentiment Score**
+* **What it is & What it means:** Real-time rolling NLP sentiment score (-1.0 to +1.0) parsed from breaking news headlines over the preceding 24–72 hours, quantifying external shocks before price action reflects them.
+* **Source & Cost:** External financial NLP news APIs (e.g., Alpha Vantage News Sentiment or NewsAPI); **Freemium / Paid** (free tiers have request caps, professional feeds require a subscription).
+* **Decision Impact & Timeline:** Serves as an emergency veto filter to avoid fundamentally sound setups carrying toxic news risk; **collected for now** via live polling and used later to train the IE.
+* **Write Trigger:** Written during the hourly signal evaluation phase.
+
+
+* **Real-Time Path Excursions (MFE / MAE)**
+* **What it is & What it means:** Maximum Favorable Excursion and Maximum Adverse Excursion tracked hour-by-hour, measuring high and low watermarks a trade hits before exit.
+* **Source & Cost:** Internal portfolio tracking; **Free** (internal calculation).
+* **Decision Impact & Timeline:** Trains future Oracle iterations on path dynamics and heat tolerance to optimize stop-losses and targets; **collected for now** and used later to train the IE.
+* **Write Trigger:** Written and appended as an update to the specific trade row inside the Parquet store the moment a position is closed.
+
+HOWEVER:
+
+Collecting those features now while continuing to score live trades strictly on the proven v6.0 baseline is the optimal strategy. It completely avoids model mismatch errors and dangerous out-of-distribution drift while building a rich asset for v7.0 training.
+
+You are right to question if we are overcomplicating. Adding raw sentiment APIs or order book microstructure right now adds brittle moving parts and potential failure points to a trading engine that is already successfully executing and logging data.
+
+**Expert Recommendation**
+
+* **Keep the Execution Engine Pure**: Leave the active scoring and gating logic locked to the stable 8-feature v6.0 model. Do not let unvalidated, noisy parameters veto live trades or alter your risk tiers today.
+* **Selectively Harvest Zero-Maintenance Features**: Since macro proxies (TLT, UUP) and sector relative strength vectors are entirely free and already accessible through your existing Alpaca data feed, you can easily log them into your wide Parquet store right away without adding API dependencies or cost.
+* **Defer Complex External APIs**: Skip news sentiment and order book microstructure for now. They require external polling, rate-limit handling, and maintenance overhead that will distract from your primary focus.
+
+Let the daemon quietly harvest structural and macro features in the background over the coming weeks. Once you have a robust sample size of live data alongside your historical sets, you'll have a clean, battle-tested foundation to train Oracle v7.0 without disrupting your live P&L.
+
+
+And as Such do these now:
+
+Macro Regime Index: A composite tracking yield curve slopes (2s10s spread), US Dollar Index (DXY) velocity, and volatility shifts via proxy ETFs (TLT, UUP, VXX) sourced natively through your existing Alpaca data feed at zero cost, ready to be logged immediately without external API dependencies.
+
+Sector Relative Strength Ratio: The rolling 14-period performance ratio of sector ETFs (XLK, XLF, etc.) relative to SPY derived instantly from your existing watchlist map and data stream for free.
+
+Real-Time Path Excursions (MFE / MAE): Maximum Favorable and Maximum Adverse Excursions tracked internally by your portfolio state and logged upon trade closure at zero cost and zero maintenance.
+
+
+And maybe these later:
+
+Order Book Microstructure & Spread: Prevailing bid-ask spreads and order book depth imbalances queried via Alpaca quotes endpoints; available for free but deferred to prevent unnecessary code complexity until the baseline pipeline runs smoothly.
+
+Geopolitical News Sentiment Score: Real-time rolling NLP sentiment scores (-1.0 to +1.0) parsed from breaking news headlines via external third-party APIs (e.g., Alpha Vantage or NewsAPI); requires managing freemium rate limits, external dependencies, and paid tiers for historical depth.
+
+
+
+#END
