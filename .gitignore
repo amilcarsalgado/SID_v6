@@ -1,0 +1,12 @@
+# Large data and cache files
+data/cache/
+*.pkl
+
+# Local environment and IDE files
+.venv/
+.idea/
+__pycache__/
+*.pyc
+
+
+.env

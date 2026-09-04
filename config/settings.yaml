@@ -1,0 +1,28 @@
+# config/settings.yaml
+system:
+  revision: "2.0_Hourly_ML"
+  mode: "paper"  # "backtest" | "paper" | "live"
+
+account:
+  initial_cash: 40000.0
+  sizing_risk_base: 30000.0
+  max_open_positions: 15
+  max_notional_allocation_pct: 0.20
+  commission: 1.00
+  defensive_risk_pct: 0.01
+  drawdown_threshold: 0.05
+
+filters:
+  min_ticker_score: 3       # Tiers 1 & 2 (Score >= 3) for clean fills and low noise
+  trap_threshold: 0.35      # Model vetoes entry if P(Trap) >= 35%
+  whale_threshold: 0.42     # Targets RSI 60 runner if P(Whale) >= 42%, else RSI 50
+
+
+#simulation:
+#  observation_start: "2025-07-19"   # Pure Out-of-Sample (Unseen by the model)
+
+paths:
+  watchlist: "config/symbols.xlsx"
+  model: "data/models/IE_Oracle_v6.0_Hourly.joblib"
+  cache_dir: "data/cache"
+  output_dir: "SIM_Results"
