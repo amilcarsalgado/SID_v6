@@ -1,5 +1,5 @@
 {
-    "hwm": 102129.29,
+    "hwm": 103084.68,
     "burned_regimes": {
         "BITO": [
             4
@@ -11,13 +11,15 @@
             5
         ],
         "MSFT": [
-            2
+            2,
+            4
         ],
         "MSTR": [
             1
         ],
         "WBD": [
-            1
+            1,
+            4
         ],
         "MA": [
             2
@@ -27,47 +29,163 @@
         ],
         "SCCO": [
             3
+        ],
+        "NWSA": [
+            3
+        ],
+        "DIS": [
+            4
+        ],
+        "MRK": [
+            4
+        ],
+        "NOW": [
+            5
+        ],
+        "VZ": [
+            2
+        ],
+        "DG": [
+            4
+        ],
+        "EL": [
+            4
+        ],
+        "T": [
+            3
+        ],
+        "EQT": [
+            4
+        ],
+        "GILD": [
+            5
+        ],
+        "OVV": [
+            5
+        ],
+        "PFE": [
+            3
+        ],
+        "GO": [
+            3
+        ],
+        "CLF": [
+            4
+        ],
+        "TEAM": [
+            2
+        ],
+        "HAL": [
+            3
+        ],
+        "DEC": [
+            3
         ]
     },
     "position_meta": {
+        "NWSA": {
+            "exit_rule": "RSI_50",
+            "entry_time": "2026-09-08 15:30:04",
+            "avg_entry": 29.855,
+            "sl_price": 29.0,
+            "Entry_RSI": 37.207372665239006,
+            "E_RSI_Slp": "🟩 UP",
+            "Entry_MACD": -0.3049598320115905,
+            "E_MACD_Slp": "🟩 UP",
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 0.824192061538733,
+            "Dist_from_EMA": 0.4386336477334513
+        },
+        "NOW": {
+            "exit_rule": "RSI_50",
+            "entry_time": "2026-09-09 14:30:05",
+            "avg_entry": 131.61,
+            "sl_price": 130.0,
+            "Entry_RSI": 31.644100827930714,
+            "E_RSI_Slp": "🟥 DN",
+            "Entry_MACD": -2.5348573052036443,
+            "E_MACD_Slp": "🟩 UP",
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 0.459717500385429,
+            "Dist_from_EMA": 1.664246753449335
+        },
         "WBD": {
             "exit_rule": "RSI_60_WHALE",
-            "entry_time": "2026-09-03 10:30:05",
-            "avg_entry": 28.35,
-            "sl_price": 28.0,
-            "Entry_RSI": 39.88192901388077,
+            "entry_time": "2026-09-09 14:30:05",
+            "avg_entry": 28.035,
+            "sl_price": 27.0,
+            "Entry_RSI": 35.54795618169234,
             "E_RSI_Slp": "🟩 UP",
-            "Entry_MACD": -0.08053455764530426,
+            "Entry_MACD": -0.10578053614487004,
             "E_MACD_Slp": "🟩 UP",
-            "E_MACD_vs_Sig": "🟩 ABV",
-            "Entry_RVOL": 0.43863538576555594,
-            "Dist_from_EMA": 2.5166290402220053
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 0.7654373683806461,
+            "Dist_from_EMA": 0.4877209396083936
         },
-        "MA": {
+        "PFE": {
             "exit_rule": "RSI_50",
-            "entry_time": "2026-09-03 11:30:05",
-            "avg_entry": 586.86,
-            "sl_price": 580.0,
-            "Entry_RSI": 44.80658356904316,
+            "entry_time": "2026-09-10 14:30:04",
+            "avg_entry": 27.48,
+            "sl_price": 27.0,
+            "Entry_RSI": 30.846655366346695,
             "E_RSI_Slp": "🟩 UP",
-            "Entry_MACD": -1.1759625351588738,
+            "Entry_MACD": -0.2333613615036647,
             "E_MACD_Slp": "🟩 UP",
-            "E_MACD_vs_Sig": "🟩 ABV",
-            "Entry_RVOL": 0.3385569372830519,
-            "Dist_from_EMA": 1.7627300851467527
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 0.2520403016472499,
+            "Dist_from_EMA": 0.2039791639948631
         },
-        "FCX": {
+        "GO": {
             "exit_rule": "RSI_50",
-            "entry_time": "2026-09-03 11:30:05",
-            "avg_entry": 73.2,
-            "sl_price": 71.0,
-            "Entry_RSI": 42.88230570176491,
+            "entry_time": "2026-09-10 15:30:04",
+            "avg_entry": 11.305,
+            "sl_price": 11.0,
+            "Entry_RSI": 36.40564175548884,
             "E_RSI_Slp": "🟩 UP",
-            "Entry_MACD": -0.850866771245748,
+            "Entry_MACD": -0.2258711102661053,
+            "E_MACD_Slp": "🟩 UP",
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 0.5424385216950476,
+            "Dist_from_EMA": 0.31450365593994467
+        },
+        "TEAM": {
+            "exit_rule": "RSI_50",
+            "entry_time": "2026-09-11 14:30:04",
+            "avg_entry": 179.08,
+            "sl_price": 174.0,
+            "Entry_RSI": 44.32023930209636,
+            "E_RSI_Slp": "🟩 UP",
+            "Entry_MACD": -1.3601914247792593,
             "E_MACD_Slp": "🟩 UP",
             "E_MACD_vs_Sig": "🟩 ABV",
-            "Entry_RVOL": 0.4257686426472125,
-            "Dist_from_EMA": 3.0940727151530267
+            "Entry_RVOL": 0.23094265343724607,
+            "Dist_from_EMA": 9.187651336373836
+        },
+        "HAL": {
+            "exit_rule": "RSI_50",
+            "entry_time": "2026-09-11 14:30:04",
+            "avg_entry": 35.73,
+            "sl_price": 35.0,
+            "Entry_RSI": 37.18148211071401,
+            "E_RSI_Slp": "🟩 UP",
+            "Entry_MACD": -0.3486844084353251,
+            "E_MACD_Slp": "🟩 UP",
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 0.2448766637693048,
+            "Dist_from_EMA": 0.9636085887271622
+        },
+        "DEC": {
+            "exit_rule": "RSI_50",
+            "entry_time": "2026-09-11 15:57:59",
+            "avg_entry": 14.81,
+            "sl_price": 14.0,
+            "Entry_RSI": 37.82703392937896,
+            "E_RSI_Slp": "🟩 UP",
+            "Entry_MACD": -0.1481773058175655,
+            "E_MACD_Slp": "🟩 UP",
+            "E_MACD_vs_Sig": "🟥 BLW",
+            "Entry_RVOL": 2.0234181080975713,
+            "Dist_from_EMA": 1.0461243942373797
         }
     }
 }

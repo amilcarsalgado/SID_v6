@@ -1,0 +1,313 @@
+# 🛑 SID Equities & Forex: Macro Blackout Calendar
+
+**File:** `config/blackout_dates.json`
+**Purpose:** Provides UTC-based timestamps and buffers to autonomously halt new entries during high-impact global macroeconomic events. 
+**Engine Integration:** Read dynamically by `paper_trader.py` on every hourly scan.
+
+Every catalyst discussed—US macro indicators (CPI, PPI, NFP), the upcoming CLARITY vote, major G10 central banks (Fed, BOJ, BOE, ECB, BOC) through 2026, and all confirmed FOMC dates through 2027—has been arranged in strict chronological order (UTC).
+
+
+Key Points on the Schema
+
+Chronological Sorting: The events flow directly in order of execution, which makes debugging and reading scan logs straightforward.
+
+Daylight Saving Adjustments: November and December US releases shift to 13:30:00Z (reflecting the change from EDT to EST), preserving the 08:30 AM Eastern release time.
+
+Buffer Strategy: High-impact press conferences (FOMC, ECB) are configured with 120-minute post-buffers to let volatile market commentary pass before new positions can be initiated.
+## JSON Configuration
+
+```json
+{
+  "blackout_events": [
+    {
+      "event": "US Senate CLARITY Act Cloture Vote",
+      "currency": ["USD", "CRYPTO"],
+      "datetime_utc": "2026-09-15T16:00:00Z",
+      "buffer_minutes_before": 0,
+      "buffer_minutes_after": 240,
+      "impact": "MEDIUM",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.senate.gov/legislative/cloture/cloture_votes.htm](https://www.senate.gov/legislative/cloture/cloture_votes.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision & Press Conference",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-09-16T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "Bank of England (BOE) Rate Decision",
+      "currency": ["GBP", "GBP/USD", "EUR/GBP"],
+      "datetime_utc": "2026-09-17T11:00:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bankofengland.co.uk/news/2025/september/monetary-policy-committee-dates-for-2026](https://www.bankofengland.co.uk/news/2025/september/monetary-policy-committee-dates-for-2026)"
+    },
+    {
+      "event": "Bank of Japan (BOJ) Rate Decision",
+      "currency": ["JPY", "USD", "EUR"],
+      "datetime_utc": "2026-09-18T03:00:00Z",
+      "buffer_minutes_before": 120,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.boj.or.jp/en/mpo/mpmsche_minu/index.htm](https://www.boj.or.jp/en/mpo/mpmsche_minu/index.htm)"
+    },
+    {
+      "event": "US Non-Farm Payrolls (Oct 2026)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-10-02T12:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/schedule/news_release/empsit.htm](https://www.bls.gov/schedule/news_release/empsit.htm)"
+    },
+    {
+      "event": "US Consumer Price Index (CPI) - Sep Data",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-10-14T12:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/cpi/](https://www.bls.gov/cpi/)"
+    },
+    {
+      "event": "US Producer Price Index (PPI) - Sep Data",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-10-15T12:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/ppi/](https://www.bls.gov/ppi/)"
+    },
+    {
+      "event": "Bank of Canada (BOC) Rate Decision",
+      "currency": ["CAD", "USD/CAD"],
+      "datetime_utc": "2026-10-28T13:45:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bankofcanada.ca](https://www.bankofcanada.ca)"
+    },
+    {
+      "event": "FOMC Rate Decision (Oct 2026)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-10-28T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "European Central Bank (ECB) Rate Decision",
+      "currency": ["EUR", "EUR/USD", "EUR/GBP"],
+      "datetime_utc": "2026-10-29T13:15:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html](https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html)"
+    },
+    {
+      "event": "Bank of England (BOE) Rate Decision",
+      "currency": ["GBP", "GBP/USD", "EUR/GBP"],
+      "datetime_utc": "2026-11-05T12:00:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bankofengland.co.uk/news/2025/september/monetary-policy-committee-dates-for-2026](https://www.bankofengland.co.uk/news/2025/september/monetary-policy-committee-dates-for-2026)"
+    },
+    {
+      "event": "US Non-Farm Payrolls (Nov 2026)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-11-06T13:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/schedule/news_release/empsit.htm](https://www.bls.gov/schedule/news_release/empsit.htm)"
+    },
+    {
+      "event": "US Consumer Price Index (CPI) - Oct Data",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-11-10T13:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/cpi/](https://www.bls.gov/cpi/)"
+    },
+    {
+      "event": "US Producer Price Index (PPI) - Oct Data",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-11-13T13:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/ppi/](https://www.bls.gov/ppi/)"
+    },
+    {
+      "event": "US Non-Farm Payrolls (Dec 2026)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-12-04T13:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/schedule/news_release/empsit.htm](https://www.bls.gov/schedule/news_release/empsit.htm)"
+    },
+    {
+      "event": "Bank of Canada (BOC) Rate Decision",
+      "currency": ["CAD", "USD/CAD"],
+      "datetime_utc": "2026-12-09T14:45:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://myperch.io/bank-of-canada-interest-rate-schedule/](https://myperch.io/bank-of-canada-interest-rate-schedule/)"
+    },
+    {
+      "event": "FOMC Rate Decision (Dec 2026)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-12-09T19:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "US Consumer Price Index (CPI) - Nov Data",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-12-10T13:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/cpi/](https://www.bls.gov/cpi/)"
+    },
+    {
+      "event": "US Producer Price Index (PPI) - Nov Data",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2026-12-15T13:30:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bls.gov/ppi/](https://www.bls.gov/ppi/)"
+    },
+    {
+      "event": "Bank of England (BOE) Rate Decision",
+      "currency": ["GBP", "GBP/USD", "EUR/GBP"],
+      "datetime_utc": "2026-12-17T12:00:00Z",
+      "buffer_minutes_before": 30,
+      "buffer_minutes_after": 60,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.bankofengland.co.uk/news/2025/september/monetary-policy-committee-dates-for-2026](https://www.bankofengland.co.uk/news/2025/september/monetary-policy-committee-dates-for-2026)"
+    },
+    {
+      "event": "European Central Bank (ECB) Rate Decision",
+      "currency": ["EUR", "EUR/USD", "EUR/GBP"],
+      "datetime_utc": "2026-12-17T13:15:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html](https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html)"
+    },
+    {
+      "event": "FOMC Rate Decision (Jan 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-01-27T19:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Mar 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-03-17T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Apr 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-04-28T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Jun 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-06-09T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Jul 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-07-28T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Sep 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-09-15T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Oct 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-10-27T18:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    },
+    {
+      "event": "FOMC Rate Decision (Dec 2027)",
+      "currency": ["USD", "ALL_FX"],
+      "datetime_utc": "2027-12-08T19:00:00Z",
+      "buffer_minutes_before": 60,
+      "buffer_minutes_after": 120,
+      "impact": "HIGH",
+      "action": "HALT_NEW_ENTRIES",
+      "source_url": "[https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)"
+    }
+  ]
+}

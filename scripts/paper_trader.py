@@ -23,7 +23,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-load_dotenv(PROJECT_ROOT / ".env")
+env_path = PROJECT_ROOT / ".env"
+print(f"Loading .env from: {env_path}, Exists: {env_path.exists()}")
+load_dotenv(dotenv_path=env_path, override=True)
+
+if not os.getenv("APCA_API_KEY_ID") and os.getenv("ALPACA_API_KEY"):
+    os.environ["APCA_API_KEY_ID"] = os.getenv("ALPACA_API_KEY")
+if not os.getenv("APCA_API_SECRET_KEY") and os.getenv("ALPACA_SECRET_KEY"):
+    os.environ["APCA_API_SECRET_KEY"] = os.getenv("ALPACA_SECRET_KEY")
 
 try:
     from alpaca.trading.client import TradingClient
@@ -40,6 +47,7 @@ except ImportError:
 from src.trading_engine.data.loader import MarketDataLoader
 
 NY_TZ = zoneinfo.ZoneInfo("America/New_York")
+UTC_TZ = zoneinfo.ZoneInfo("UTC")
 
 FEATURE_COLS = [
     'RSI_Extreme_Value',
@@ -92,10 +100,20 @@ class AlpacaExecutionEngine:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state = self.load_state()
 
+    def api_retry(self, func, *args, retries=3, delay=5, **kwargs):
+        """Wrapper to catch transient Alpaca HTTP 500 / Timeout errors."""
+        for attempt in range(retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt == retries - 1:
+                    raise e
+                print(f"   ⚠️ Alpaca API hiccup ({e}). Retrying in {delay} seconds... (Attempt {attempt + 1}/{retries})")
+                time.sleep(delay)
+
     def load_state(self) -> dict:
         if self.state_file.exists():
             try:
-                # Force UTF-8 encoding on read to preserve emojis
                 with open(self.state_file, "r", encoding="utf-8") as f:
                     return json.load(f)
             except json.JSONDecodeError:
@@ -103,12 +121,10 @@ class AlpacaExecutionEngine:
         return {"hwm": 0.0, "burned_regimes": {}, "position_meta": {}}
 
     def save_state(self):
-        # Force UTF-8 encoding and allow raw emojis on write
         with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=4, ensure_ascii=False)
 
     def append_to_ledger(self, trade_record: dict):
-        """Automated export of closed trades to the master Excel ledger for autopsy ingestion."""
         ledger_dir = PROJECT_ROOT / "SIM_Results"
         ledger_dir.mkdir(parents=True, exist_ok=True)
         ledger_path = ledger_dir / "Alpaca_Live_Ledger.xlsx"
@@ -121,26 +137,26 @@ class AlpacaExecutionEngine:
                 df_combined = pd.concat([df_existing, df_new], ignore_index=True)
             except Exception:
                 df_combined = df_new
+
+            try:
+                with pd.ExcelWriter(ledger_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                    df_combined.to_excel(writer, sheet_name="Closed_Trades", index=False)
+                print(f"   📝 Ledger Updated: Logged terminated trade for {trade_record['Ticker']} to SIM_Results/Alpaca_Live_Ledger.xlsx")
+            except Exception as e:
+                print(f"   ❌ Error writing to Excel ledger: {e}")
         else:
             df_combined = df_new
-
-        try:
-            with pd.ExcelWriter(ledger_path, engine='openpyxl') as writer:
-                df_combined.to_excel(writer, sheet_name="Closed_Trades", index=False)
-            print(f"   📝 Ledger Updated: Logged terminated trade for {trade_record['Ticker']} to SIM_Results/Alpaca_Live_Ledger.xlsx")
-        except Exception as e:
-            print(f"   ❌ Error writing to Excel ledger: {e}")
+            try:
+                with pd.ExcelWriter(ledger_path, engine='openpyxl') as writer:
+                    df_combined.to_excel(writer, sheet_name="Closed_Trades", index=False)
+                print(f"   📝 Ledger Created & Updated: Logged trade for {trade_record['Ticker']} to SIM_Results/Alpaca_Live_Ledger.xlsx")
+            except Exception as e:
+                print(f"   ❌ Error writing to Excel ledger: {e}")
 
     def log_comprehensive_feature_snapshot(
-        self,
-        ticker: str,
-        features_df: pd.DataFrame,
-        p_trap: float,
-        p_whale: float,
-        action: str,
-        extra_metadata: dict = None
+        self, ticker: str, features_df: pd.DataFrame, p_trap: float,
+        p_whale: float, action: str, extra_metadata: dict = None
     ):
-        """Streams live feature vectors and Oracle probabilities to a local Parquet store for v7.0."""
         store_dir = PROJECT_ROOT / "data" / "training_store"
         store_dir.mkdir(parents=True, exist_ok=True)
         parquet_path = store_dir / "oracle_v7_live_training_store.parquet"
@@ -180,9 +196,10 @@ class AlpacaExecutionEngine:
         print("  • Strategy Mode        : Long-Only Equity Swing (Shorts disabled)")
         print(f"  • Sizing Base / Max Cap: ${self.sizing_risk_base:,.2f} risk base | Max {self.max_positions} open positions")
         print(f"  • ML Gatekeeper        : Oracle v6.0 Hourly (Veto if P(Trap) >= {int(self.trap_thresh * 100)}%)")
-        print("  • Order Execution      : Market Buy + Hard OTO Stop-Loss")
+        print("  • Order Execution      : Market Buy + Hard OTO Stop-Loss (CASH ONLY / NO MARGIN)")
         print("  • Profit Exits         : Immediate Scan Execution if RSI >= 50 (or >= 60 Whale)")
         print("  • Capital Protection   : Drawdown Governor & Regime Burn Guard Active")
+        print("  • Macro Risk Filter    : blackout_dates.json (UTC Buffer Check Active)")
         print("-" * 85)
         print(" [SCAN SCHEDULE (7-BAR CADENCE)]")
         print("  • Scans 1 to 6         : 10:30, 11:30, 12:30, 01:30, 02:30, 03:30 (Closed 60m bars)")
@@ -190,23 +207,35 @@ class AlpacaExecutionEngine:
         print("=" * 85 + "\n")
 
     def print_boot_snapshot(self):
-        """Prints current positions immediately on script startup before sleeping."""
-        account = self.trading_client.get_account()
-        positions = self.trading_client.get_all_positions()
+        account = self.api_retry(self.trading_client.get_account)
+        positions = self.api_retry(self.trading_client.get_all_positions)
 
         print("\n" + "=" * 90)
         print("🏦 BOOT-UP ACCOUNT SNAPSHOT")
         print("=" * 90)
         print(f"  • Portfolio Value: ${float(account.portfolio_value):,.2f}")
-        print(f"  • Buying Power   : ${float(account.buying_power):,.2f}")
+        print(f"  • Cash Balance   : ${float(account.cash):,.2f}")
         print("=" * 90)
 
         if not positions:
             print("📦 Open Positions: 0 (No active trades)\n")
             return
 
+        all_symbols = [p.symbol for p in positions]
+        start_time = datetime.now(NY_TZ) - timedelta(days=60)
+        try:
+            request_params = StockBarsRequest(
+                symbol_or_symbols=all_symbols, timeframe=TimeFrame.Hour, start=start_time, feed=DataFeed.IEX
+            )
+            bars = self.api_retry(self.data_client.get_stock_bars, request_params).df
+            if not bars.empty:
+                bars.index.names = ["Ticker", "Datetime"]
+                bars = bars.tz_convert("America/New_York", level="Datetime")
+        except Exception:
+            bars = pd.DataFrame()
+
         print(f"📦 Open Positions ({len(positions)} / {self.max_positions}):")
-        print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Current':<10} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'E_RSI_Slp':<10} {'E_MACD_Slp':<11} {'E_MACD_vs_Sig':<14} {'E_Dist_200':<11} {'Chart_Link'}")
+        print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Current':<10} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'Cur_RSI':<9} {'E_RSI_Slp':<10} {'E_MACD_Slp':<11} {'E_MACD_vs_Sig':<14} {'E_Dist_200':<11} {'Chart_Link'}")
         print("-" * 165)
 
         for p in positions:
@@ -216,6 +245,17 @@ class AlpacaExecutionEngine:
             curr = float(p.current_price)
             pnl = float(p.unrealized_pl)
             pnl_pct = float(p.unrealized_plpc) * 100.0
+
+            curr_rsi_val = "N/A"
+            if not bars.empty and t in bars.index.get_level_values("Ticker"):
+                tdf = bars.xs(t, level="Ticker").copy().sort_index()
+                if len(tdf) >= 14:
+                    delta = tdf['close'].diff()
+                    up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
+                    ema_up = up.ewm(com=13, adjust=False).mean()
+                    ema_down = down.ewm(com=13, adjust=False).mean()
+                    rsi_series = 100 - (100 / (1 + (ema_up / ema_down)))
+                    curr_rsi_val = f"{rsi_series.iloc[-1]:.1f}"
 
             meta = self.state.get('position_meta', {}).get(t, {})
             entry_time = meta.get('entry_time', 'N/A')
@@ -229,8 +269,7 @@ class AlpacaExecutionEngine:
             dist_str = f"{e_dist:+.1f}%" if e_dist is not None else "N/A"
 
             tv_url = f"https://www.tradingview.com/chart/QxnQNEPO/?symbol={t}"
-
-            print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<9.2f} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {rsi_slp:<10} {macd_slp:<11} {macd_sig:<14} {dist_str:<11} {tv_url}")
+            print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<9.2f} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {curr_rsi_val:<9} {rsi_slp:<10} {macd_slp:<11} {macd_sig:<14} {dist_str:<11} {tv_url}")
         print("-" * 165 + "\n")
 
     def get_next_schedule_target(self) -> Tuple[datetime, str]:
@@ -255,35 +294,118 @@ class AlpacaExecutionEngine:
 
     def evaluate_live_scan(self, is_final_bar: bool = False):
         now_ny = datetime.now(NY_TZ)
+        now_utc = datetime.now(UTC_TZ)
         scan_label = "FINAL PRE-CLOSE" if is_final_bar else now_ny.strftime('%H:%M:%S')
 
         print("\n\n\n\n")
         print(f"[{now_ny.strftime('%Y-%m-%d %H:%M:%S %Z')}] 🔍 Running Hourly Scan ({scan_label})...")
 
-        account = self.trading_client.get_account()
+        # =====================================================================
+        # MACRO BLACKOUT CALENDAR CHECK (UTC BUFFERS)
+        # =====================================================================
+        is_blackout_active = False
+        blackout_reason = ""
+
+        blackout_file = PROJECT_ROOT / "config" / "blackout_dates.json"
+        if blackout_file.exists():
+            try:
+                with open(blackout_file, "r") as f:
+                    blackout_data = json.load(f).get("blackout_events", [])
+
+                for event in blackout_data:
+                    dt_str = event.get("datetime_utc", "")
+                    if not dt_str: continue
+
+                    event_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    buffer_before = event.get("buffer_minutes_before", 0)
+                    buffer_after = event.get("buffer_minutes_after", 0)
+
+                    start_blackout = event_dt - timedelta(minutes=buffer_before)
+                    end_blackout = event_dt + timedelta(minutes=buffer_after)
+
+                    if start_blackout <= now_utc <= end_blackout:
+                        is_blackout_active = True
+                        blackout_reason = f"{event.get('event', 'Unknown Event')} (Ends: {end_blackout.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+                        break
+            except Exception as e:
+                print(f"⚠️ Error reading blackout calendar: {e}")
+
+        if is_blackout_active:
+            print(f"⚠️ [MACRO BLACKOUT ACTIVE] Engine blocked by: {blackout_reason}")
+            print("   ↳ Managing open positions ONLY. No new entries will be taken.")
+        # =====================================================================
+
+        account = self.api_retry(self.trading_client.get_account)
         current_equity = float(account.portfolio_value)
         self.state['hwm'] = max(self.state.get('hwm', current_equity), current_equity)
 
         drawdown = (self.state['hwm'] - current_equity) / self.state['hwm']
         is_defensive = drawdown >= 0.05
 
-        raw_positions = self.trading_client.get_all_positions()
+        raw_positions = self.api_retry(self.trading_client.get_all_positions)
         positions = {p.symbol: p for p in raw_positions}
-
         active_symbols = set(positions.keys())
+
+        # =====================================================================
+        # STOP-LOSS INTERCEPTOR
+        # =====================================================================
+        for t in list(self.state.get('position_meta', {}).keys()):
+            if t not in active_symbols:
+                print(f"⚠️ {t} is missing from Alpaca (likely stopped out). Logging to ledger...")
+                meta = self.state['position_meta'][t]
+
+                try:
+                    closed_req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[t], limit=10)
+                    closed_orders = self.api_retry(self.trading_client.get_orders, closed_req)
+
+                    sell_orders = [o for o in closed_orders if o.side == OrderSide.SELL and o.filled_qty and float(o.filled_qty) > 0]
+
+                    if sell_orders:
+                        last_sell = sell_orders[0]
+                        exit_price = float(last_sell.filled_avg_price)
+                        exit_time = last_sell.filled_at.astimezone(NY_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                        qty = float(last_sell.filled_qty)
+                    else:
+                        exit_price = meta.get('sl_price', 0.0)
+                        exit_time = now_ny.strftime('%Y-%m-%d %H:%M:%S')
+                        qty = 0
+
+                    avg_entry = meta.get('avg_entry', 0.0)
+                    realized_pnl = (exit_price - avg_entry) * qty if qty > 0 else 0.0
+                    return_pct = ((exit_price - avg_entry) / avg_entry) * 100 if avg_entry > 0 else 0.0
+
+                    trade_record = {
+                        'Ticker': t,
+                        'Entry_Time': meta.get('entry_time', 'N/A'),
+                        'Exit_Time': exit_time,
+                        'Shares': qty,
+                        'Avg_Entry': avg_entry,
+                        'SL_Price': meta.get('sl_price', 0.0),
+                        'Exit_Price': exit_price,
+                        'Realized_PnL': realized_pnl,
+                        'Return_%': return_pct,
+                        'Entry_RSI': meta.get('Entry_RSI', 'N/A'),
+                        'Entry_MACD': meta.get('Entry_MACD', 'N/A'),
+                        'Chart_Link': f"https://www.tradingview.com/chart/QxnQNEPO/?symbol={t}"
+                    }
+                    self.append_to_ledger(trade_record)
+                except Exception as e:
+                    print(f"❌ Error recovering stopped-out trade {t} for ledger: {e}")
+
+        # Clean up the state file after ledgering is complete
         self.state['position_meta'] = {k: v for k, v in self.state.get('position_meta', {}).items() if k in active_symbols}
         self.save_state()
+        # =====================================================================
 
         all_symbols = list(set(self.tickers + list(positions.keys())))
-
-        start_time = now_ny - timedelta(days=40)
+        start_time = now_ny - timedelta(days=60)
         request_params = StockBarsRequest(
-            symbol_or_symbols=all_symbols,
-            timeframe=TimeFrame.Hour,
-            start=start_time,
-            feed=DataFeed.IEX
+            symbol_or_symbols=all_symbols, timeframe=TimeFrame.Hour, start=start_time, feed=DataFeed.IEX
         )
-        bars = self.data_client.get_stock_bars(request_params).df
+
+        bars_call = self.api_retry(self.data_client.get_stock_bars, request_params)
+        bars = bars_call.df if bars_call else pd.DataFrame()
+
         if bars.empty:
             print("⚠️ No bar data returned from feed.")
             return
@@ -299,7 +421,7 @@ class AlpacaExecutionEngine:
             if t not in bars.index.get_level_values("Ticker"): continue
 
             df = bars.xs(t, level="Ticker").copy().sort_index()
-            if len(df) < 200: continue
+            if len(df) < 50: continue
 
             if not is_final_bar:
                 last_bar_time = df.index[-1]
@@ -307,7 +429,7 @@ class AlpacaExecutionEngine:
                 if last_bar_time >= current_period_start:
                     df = df.iloc[:-1]
 
-            if len(df) < 200: continue
+            if len(df) < 50: continue
 
             if is_final_bar:
                 df.iloc[-1, df.columns.get_loc('Volume')] = df.iloc[-1]['Volume'] * (30.0 / 28.0)
@@ -367,18 +489,16 @@ class AlpacaExecutionEngine:
                     qty = float(pos.qty)
                     est_exit_price = float(pos.current_price)
 
-                    # Explicitly locate and cancel the blocking stop-loss order
                     open_orders_req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[t])
-                    open_orders = self.trading_client.get_orders(open_orders_req)
+                    open_orders = self.api_retry(self.trading_client.get_orders, open_orders_req)
 
                     if open_orders:
                         for order in open_orders:
-                            self.trading_client.cancel_order_by_id(order.id)
+                            self.api_retry(self.trading_client.cancel_order_by_id, order.id)
                         time.sleep(3)
 
-                    # Liquidate 100% of the freed shares
                     close_req = ClosePositionRequest(percentage="100")
-                    self.trading_client.close_position(t, close_options=close_req)
+                    self.api_retry(self.trading_client.close_position, t, close_options=close_req)
 
                     trade_record = {
                         'Ticker': t,
@@ -408,114 +528,128 @@ class AlpacaExecutionEngine:
         approved_count = 0
         blocked_count = 0
 
-        for t in self.tickers:
-            if t in positions or t not in symbol_data: continue
-            if len(positions) >= self.max_positions: break
+        # Only evaluate entries if the macro blackout calendar is clear
+        if not is_blackout_active:
+            available_cash = float(account.cash)
 
-            sdata = symbol_data[t]
-            df = sdata['df']
-            latest = sdata['latest']
-            current_L_ID = int(latest['L_ID'])
+            for t in self.tickers:
+                if t in positions or t not in symbol_data: continue
+                if len(positions) >= self.max_positions: break
 
-            burned = self.state.get('burned_regimes', {}).get(t, [])
-            if current_L_ID in burned: continue
+                sdata = symbol_data[t]
+                df = sdata['df']
 
-            is_above_trend = latest['Close'] > latest['EMA_200']
-            is_agg = (latest['State_L_Agg'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
-            is_tier = (latest['State_L_Tier'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
+                if len(df) < 200: continue
 
-            if is_agg or is_tier:
-                entry_price = float(latest['Close'])
-                stop_loss = float(latest['SL_L'])
+                latest = sdata['latest']
+                current_L_ID = int(latest['L_ID'])
 
-                if pd.isna(stop_loss) or entry_price <= stop_loss:
-                    continue
+                burned = self.state.get('burned_regimes', {}).get(t, [])
+                if current_L_ID in burned: continue
 
-                risk_tier = 0.02 if is_agg else 0.005
-                if is_defensive:
-                    risk_tier = min(risk_tier, 0.01)
+                is_above_trend = latest['Close'] > latest['EMA_200']
+                is_agg = (latest['State_L_Agg'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
+                is_tier = (latest['State_L_Tier'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
 
-                t_earnings = self.earnings_df[self.earnings_df['Ticker'] == t]['Earnings_Date']
-                days_to_earn, days_since_earn = 45, 45
-                if not t_earnings.empty:
-                    deltas = (t_earnings.dt.tz_localize(NY_TZ) - now_ny).dt.days
-                    fut = deltas[deltas >= 0]
-                    pst = deltas[deltas < 0]
-                    if not fut.empty: days_to_earn = int(fut.min())
-                    if not pst.empty: days_since_earn = int(abs(pst.max()))
+                if is_agg or is_tier:
+                    entry_price = float(latest['Close'])
+                    stop_loss = float(latest['SL_L'])
 
-                dist_from_ema = ((entry_price - latest['EMA_200']) / latest['EMA_200']) * 100
+                    if pd.isna(stop_loss) or entry_price <= stop_loss:
+                        continue
 
-                features = pd.DataFrame([{
-                    'RSI_Extreme_Value': latest['Extreme_RSI'],
-                    'Dist_From_EMA_%': dist_from_ema,
-                    'Entry_RVOL': latest['RVOL'],
-                    'Entry_ATR': latest['ATR'],
-                    'Days_To_Earnings': days_to_earn,
-                    'Days_Since_Earnings': days_since_earn,
-                    'Entry_Month': now_ny.month,
-                    'Risk_Tier': risk_tier
-                }])[FEATURE_COLS].fillna(0)
+                    risk_tier = 0.02 if is_agg else 0.005
+                    if is_defensive:
+                        risk_tier = min(risk_tier, 0.01)
 
-                probs = self.oracle_model.predict_proba(features)[0]
-                p_trap, p_whale = probs[0], probs[2] if len(probs) > 2 else 0.0
+                    t_earnings = self.earnings_df[self.earnings_df['Ticker'] == t]['Earnings_Date']
+                    days_to_earn, days_since_earn = 45, 45
+                    if not t_earnings.empty:
+                        deltas = (t_earnings.dt.tz_localize(NY_TZ) - now_ny).dt.days
+                        fut = deltas[deltas >= 0]
+                        pst = deltas[deltas < 0]
+                        if not fut.empty: days_to_earn = int(fut.min())
+                        if not pst.empty: days_since_earn = int(abs(pst.max()))
 
-                print(f"🎯 Signal: {t:<5} | Price: ${entry_price:.2f} | P(Trap): {p_trap:.3f} | P(Whale): {p_whale:.3f}")
+                    dist_from_ema = ((entry_price - latest['EMA_200']) / latest['EMA_200']) * 100
 
-                if p_trap >= self.trap_thresh:
-                    print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
-                    blocked_count += 1
-                    self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
-                    continue
+                    features = pd.DataFrame([{
+                        'RSI_Extreme_Value': latest['Extreme_RSI'],
+                        'Dist_From_EMA_%': dist_from_ema,
+                        'Entry_RVOL': latest['RVOL'],
+                        'Entry_ATR': latest['ATR'],
+                        'Days_To_Earnings': days_to_earn,
+                        'Days_Since_Earnings': days_since_earn,
+                        'Entry_Month': now_ny.month,
+                        'Risk_Tier': risk_tier
+                    }])[FEATURE_COLS].fillna(0)
 
-                dollar_risk = self.sizing_risk_base * risk_tier
-                risk_per_share = abs(entry_price - stop_loss)
-                shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
+                    probs = self.oracle_model.predict_proba(features)[0]
+                    p_trap, p_whale = probs[0], probs[2] if len(probs) > 2 else 0.0
 
-                max_shares = int((current_equity * self.max_notional_pct) / entry_price)
-                shares = min(shares, max_shares)
+                    print(f"🎯 Signal: {t:<5} | Price: ${entry_price:.2f} | P(Trap): {p_trap:.3f} | P(Whale): {p_whale:.3f}")
 
-                if shares <= 0: continue
+                    if p_trap >= self.trap_thresh:
+                        print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
+                        blocked_count += 1
+                        self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
+                        continue
 
-                try:
-                    order_req = MarketOrderRequest(
-                        symbol=t, qty=shares, side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
-                        stop_loss=StopLossRequest(stop_price=round(stop_loss, 2))
-                    )
-                    self.trading_client.submit_order(order_req)
-                    approved_count += 1
+                    dollar_risk = self.sizing_risk_base * risk_tier
+                    risk_per_share = abs(entry_price - stop_loss)
 
-                    self.log_comprehensive_feature_snapshot(
-                        t, features, p_trap, p_whale, action="BOUGHT",
-                        extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
-                    )
+                    shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
+                    max_shares = int((current_equity * self.max_notional_pct) / entry_price)
 
-                    exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
+                    # STRICT CASH COLLAR
+                    max_cash_shares = int(available_cash / entry_price) if available_cash > 0 else 0
+                    shares = min(shares, max_shares, max_cash_shares)
 
-                    rsi_slope_str = "🟩 UP" if latest['RSI'] > df['RSI'].iloc[-2] else "🟥 DN"
-                    macd_slope_str = "🟩 UP" if latest['MACD'] > df['MACD'].iloc[-2] else "🟥 DN"
-                    macd_sig_str = "🟩 ABV" if latest['MACD'] > latest['MACD_Signal'] else "🟥 BLW"
+                    if shares <= 0:
+                        if available_cash < entry_price:
+                            print(f"   ⚠️ Blocked {t}: Insufficient cash (${available_cash:,.2f}) to avoid using margin.")
+                        continue
 
-                    self.state['position_meta'][t] = {
-                        'exit_rule': exit_rule,
-                        'entry_time': now_ny.strftime('%Y-%m-%d %H:%M:%S'),
-                        'avg_entry': entry_price,
-                        'sl_price': stop_loss,
-                        'Entry_RSI': float(latest['RSI']),
-                        'E_RSI_Slp': rsi_slope_str,
-                        'Entry_MACD': float(latest['MACD']),
-                        'E_MACD_Slp': macd_slope_str,
-                        'E_MACD_vs_Sig': macd_sig_str,
-                        'Entry_RVOL': float(latest['RVOL']),
-                        'Dist_from_EMA': float(dist_from_ema)
-                    }
-                    self.state.setdefault('burned_regimes', {}).setdefault(t, []).append(current_L_ID)
-                    self.save_state()
+                    try:
+                        order_req = MarketOrderRequest(
+                            symbol=t, qty=shares, side=OrderSide.BUY,
+                            time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
+                            stop_loss=StopLossRequest(stop_price=round(stop_loss, 2))
+                        )
+                        self.api_retry(self.trading_client.submit_order, order_req)
+                        approved_count += 1
 
-                    print(f"   ✅ BOUGHT: {shares} shares of {t} | Stop @ ${stop_loss:.2f} | Target: {exit_rule}")
-                except Exception as e:
-                    print(f"   ❌ Execution Error: {e}")
+                        available_cash -= (shares * entry_price)
+
+                        self.log_comprehensive_feature_snapshot(
+                            t, features, p_trap, p_whale, action="BOUGHT",
+                            extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
+                        )
+
+                        exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
+                        rsi_slope_str = "🟩 UP" if latest['RSI'] > df['RSI'].iloc[-2] else "🟥 DN"
+                        macd_slope_str = "🟩 UP" if latest['MACD'] > df['MACD'].iloc[-2] else "🟥 DN"
+                        macd_sig_str = "🟩 ABV" if latest['MACD'] > latest['MACD_Signal'] else "🟥 BLW"
+
+                        self.state['position_meta'][t] = {
+                            'exit_rule': exit_rule,
+                            'entry_time': now_ny.strftime('%Y-%m-%d %H:%M:%S'),
+                            'avg_entry': entry_price,
+                            'sl_price': stop_loss,
+                            'Entry_RSI': float(latest['RSI']),
+                            'E_RSI_Slp': rsi_slope_str,
+                            'Entry_MACD': float(latest['MACD']),
+                            'E_MACD_Slp': macd_slope_str,
+                            'E_MACD_vs_Sig': macd_sig_str,
+                            'Entry_RVOL': float(latest['RVOL']),
+                            'Dist_from_EMA': float(dist_from_ema)
+                        }
+                        self.state.setdefault('burned_regimes', {}).setdefault(t, []).append(current_L_ID)
+                        self.save_state()
+
+                        print(f"   ✅ BOUGHT: {shares} shares of {t} | Stop @ ${stop_loss:.2f} | Target: {exit_rule}")
+                    except Exception as e:
+                        print(f"   ❌ Execution Error: {e}")
 
         # ─── 4. CONSOLIDATED POST-EXECUTION REPORTING (ACCOUNT SNAPSHOT) ───
 
@@ -523,7 +657,7 @@ class AlpacaExecutionEngine:
             print(f"   ⏳ Waiting 5 seconds for Alpaca to fill {approved_count} new market order(s)...")
             time.sleep(5)
 
-        account = self.trading_client.get_account()
+        account = self.api_retry(self.trading_client.get_account)
         current_equity = float(account.portfolio_value)
         non_margin_bp = getattr(account, 'non_marginable_buying_power', None) or getattr(account, 'cash', 0.0)
 
@@ -531,7 +665,7 @@ class AlpacaExecutionEngine:
         pnl_pct = (all_time_pnl / self.starting_equity) * 100
         pnl_icon = "🟩" if all_time_pnl >= 0 else "🟥"
 
-        updated_positions = self.trading_client.get_all_positions()
+        updated_positions = self.api_retry(self.trading_client.get_all_positions)
 
         print("\n" + "=" * 90)
         print("🏦 ALPACA LIVE ACCOUNT SNAPSHOT (POST-SCAN)")
@@ -543,14 +677,17 @@ class AlpacaExecutionEngine:
         print(f"  • Buying Power         : ${float(account.buying_power):,.2f}")
         print(f"  • Non-Margin Buying Pwr: ${float(non_margin_bp):,.2f}")
         print(f"  • Drawdown Governor    : {drawdown * 100:.2f}% | Mode: {'🛡️ DEFENSIVE' if is_defensive else '🟢 NORMAL'}")
-        print(f"  • Scan Result          : Approved: {approved_count} | Blocked: {blocked_count}")
+        if is_blackout_active:
+            print(f"  • Macro Block Status   : 🛑 BLOCKED | {blackout_reason}")
+        else:
+            print(f"  • Scan Result          : Approved: {approved_count} | Blocked: {blocked_count}")
         print("=" * 90)
 
         if not updated_positions:
             print("📦 Open Positions: 0 (No active trades)")
         else:
             print(f"📦 Open Positions ({len(updated_positions)} / {self.max_positions}):")
-            print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Current':<10} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'E_RSI_Slp':<10} {'E_MACD_Slp':<11} {'E_MACD_vs_Sig':<14} {'E_Dist_200':<11} {'Chart_Link'}")
+            print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Current':<10} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'Cur_RSI':<9} {'E_RSI_Slp':<10} {'E_MACD_Slp':<11} {'E_MACD_vs_Sig':<14} {'E_Dist_200':<11} {'Chart_Link'}")
             print("-" * 165)
 
             total_unrealized_pnl = 0.0
@@ -563,6 +700,10 @@ class AlpacaExecutionEngine:
                 pnl = float(p.unrealized_pl)
                 pnl_pct = float(p.unrealized_plpc) * 100.0
                 total_unrealized_pnl += pnl
+
+                curr_rsi_val = "N/A"
+                if t in symbol_data:
+                    curr_rsi_val = f"{symbol_data[t]['latest']['RSI']:.1f}"
 
                 meta = self.state.get('position_meta', {}).get(t, {})
                 entry_time = meta.get('entry_time', 'N/A')
@@ -577,7 +718,7 @@ class AlpacaExecutionEngine:
 
                 tv_url = f"https://www.tradingview.com/chart/QxnQNEPO/?symbol={t}"
 
-                print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<9.2f} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {rsi_slp:<10} {macd_slp:<11} {macd_sig:<14} {dist_str:<11} {tv_url}")
+                print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<9.2f} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {curr_rsi_val:<9} {rsi_slp:<10} {macd_slp:<11} {macd_sig:<14} {dist_str:<11} {tv_url}")
 
             print("-" * 165)
             print(f"TOTAL UNREALIZED PnL: ${total_unrealized_pnl:,.2f}")
@@ -600,7 +741,8 @@ class AlpacaExecutionEngine:
                 print(f"💤 Sleeping for {hrs}h {mins}m {secs}s...")
                 time.sleep(sleep_sec)
 
-                clock = self.trading_client.get_clock()
+                clock = self.api_retry(self.trading_client.get_clock)
+
                 if clock.is_open:
                     is_final = (target_time.hour == 15 and target_time.minute >= 38)
                     self.evaluate_live_scan(is_final_bar=is_final)
