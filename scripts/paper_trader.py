@@ -199,7 +199,6 @@ class AlpacaExecutionEngine:
         print("  • Order Execution      : Market Buy + Hard OTO Stop-Loss (CASH ONLY / NO MARGIN)")
         print("  • Profit Exits         : Immediate Scan Execution if RSI >= 50 (or >= 60 Whale)")
         print("  • Capital Protection   : Drawdown Governor & Regime Burn Guard Active")
-        print("  • Macro Risk Filter    : blackout_dates.json (UTC Buffer Check Active)")
         print("-" * 85)
         print(" [SCAN SCHEDULE (7-BAR CADENCE)]")
         print("  • Scans 1 to 6         : 10:30, 11:30, 12:30, 01:30, 02:30, 03:30 (Closed 60m bars)")
@@ -235,8 +234,8 @@ class AlpacaExecutionEngine:
             bars = pd.DataFrame()
 
         print(f"📦 Open Positions ({len(positions)} / {self.max_positions}):")
-        print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Current':<10} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'Cur_RSI':<9} {'E_RSI_Slp':<10} {'E_MACD_Slp':<11} {'E_MACD_vs_Sig':<14} {'E_Dist_200':<11} {'Chart_Link'}")
-        print("-" * 165)
+        print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Curr_Price':<11} {'SL':<8} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'Curr_RSI':<9} {'Chart_Link'}")
+        print("-" * 125)
 
         for p in positions:
             t = p.symbol
@@ -262,15 +261,21 @@ class AlpacaExecutionEngine:
 
             e_rsi = meta.get('Entry_RSI')
             rsi_str = f"{e_rsi:.1f}" if e_rsi is not None else "N/A"
-            rsi_slp = meta.get('E_RSI_Slp', 'N/A')
-            macd_slp = meta.get('E_MACD_Slp', 'N/A')
-            macd_sig = meta.get('E_MACD_vs_Sig', 'N/A')
-            e_dist = meta.get('Dist_from_EMA')
-            dist_str = f"{e_dist:+.1f}%" if e_dist is not None else "N/A"
+
+            # Check if current price is below entry and apply red ANSI formatting
+            sl_val = meta.get('sl_price', 0.0)
+            if sl_val > 0:
+                base_sl = f"${sl_val:.2f}"
+                if curr < entry:
+                    sl_padded = f"\033[91m{base_sl:<8}\033[0m"
+                else:
+                    sl_padded = f"{base_sl:<8}"
+            else:
+                sl_padded = f"{'N/A':<8}"
 
             tv_url = f"https://www.tradingview.com/chart/QxnQNEPO/?symbol={t}"
-            print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<9.2f} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {curr_rsi_val:<9} {rsi_slp:<10} {macd_slp:<11} {macd_sig:<14} {dist_str:<11} {tv_url}")
-        print("-" * 165 + "\n")
+            print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<10.2f} {sl_padded} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {curr_rsi_val:<9} {tv_url}")
+        print("-" * 125 + "\n")
 
     def get_next_schedule_target(self) -> Tuple[datetime, str]:
         now = datetime.now(NY_TZ)
@@ -299,41 +304,6 @@ class AlpacaExecutionEngine:
 
         print("\n\n\n\n")
         print(f"[{now_ny.strftime('%Y-%m-%d %H:%M:%S %Z')}] 🔍 Running Hourly Scan ({scan_label})...")
-
-        # =====================================================================
-        # MACRO BLACKOUT CALENDAR CHECK (UTC BUFFERS)
-        # =====================================================================
-        is_blackout_active = False
-        blackout_reason = ""
-
-        blackout_file = PROJECT_ROOT / "config" / "blackout_dates.json"
-        if blackout_file.exists():
-            try:
-                with open(blackout_file, "r") as f:
-                    blackout_data = json.load(f).get("blackout_events", [])
-
-                for event in blackout_data:
-                    dt_str = event.get("datetime_utc", "")
-                    if not dt_str: continue
-
-                    event_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-                    buffer_before = event.get("buffer_minutes_before", 0)
-                    buffer_after = event.get("buffer_minutes_after", 0)
-
-                    start_blackout = event_dt - timedelta(minutes=buffer_before)
-                    end_blackout = event_dt + timedelta(minutes=buffer_after)
-
-                    if start_blackout <= now_utc <= end_blackout:
-                        is_blackout_active = True
-                        blackout_reason = f"{event.get('event', 'Unknown Event')} (Ends: {end_blackout.strftime('%Y-%m-%d %H:%M:%S UTC')})"
-                        break
-            except Exception as e:
-                print(f"⚠️ Error reading blackout calendar: {e}")
-
-        if is_blackout_active:
-            print(f"⚠️ [MACRO BLACKOUT ACTIVE] Engine blocked by: {blackout_reason}")
-            print("   ↳ Managing open positions ONLY. No new entries will be taken.")
-        # =====================================================================
 
         account = self.api_retry(self.trading_client.get_account)
         current_equity = float(account.portfolio_value)
@@ -528,128 +498,120 @@ class AlpacaExecutionEngine:
         approved_count = 0
         blocked_count = 0
 
-        # Only evaluate entries if the macro blackout calendar is clear
-        if not is_blackout_active:
-            available_cash = float(account.cash)
+        available_cash = float(account.cash)
 
-            for t in self.tickers:
-                if t in positions or t not in symbol_data: continue
-                if len(positions) >= self.max_positions: break
+        for t in self.tickers:
+            if t in positions or t not in symbol_data: continue
+            if len(positions) >= self.max_positions: break
 
-                sdata = symbol_data[t]
-                df = sdata['df']
+            sdata = symbol_data[t]
+            df = sdata['df']
 
-                if len(df) < 200: continue
+            if len(df) < 200: continue
 
-                latest = sdata['latest']
-                current_L_ID = int(latest['L_ID'])
+            latest = sdata['latest']
+            current_L_ID = int(latest['L_ID'])
 
-                burned = self.state.get('burned_regimes', {}).get(t, [])
-                if current_L_ID in burned: continue
+            burned = self.state.get('burned_regimes', {}).get(t, [])
+            if current_L_ID in burned: continue
 
-                is_above_trend = latest['Close'] > latest['EMA_200']
-                is_agg = (latest['State_L_Agg'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
-                is_tier = (latest['State_L_Tier'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
+            is_above_trend = latest['Close'] > latest['EMA_200']
+            is_agg = (latest['State_L_Agg'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
+            is_tier = (latest['State_L_Tier'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
 
-                if is_agg or is_tier:
-                    entry_price = float(latest['Close'])
-                    stop_loss = float(latest['SL_L'])
+            if is_agg or is_tier:
+                entry_price = float(latest['Close'])
+                stop_loss = float(latest['SL_L'])
 
-                    if pd.isna(stop_loss) or entry_price <= stop_loss:
-                        continue
+                if pd.isna(stop_loss) or entry_price <= stop_loss:
+                    continue
 
-                    risk_tier = 0.02 if is_agg else 0.005
-                    if is_defensive:
-                        risk_tier = min(risk_tier, 0.01)
+                risk_tier = 0.02 if is_agg else 0.005
+                if is_defensive:
+                    risk_tier = min(risk_tier, 0.01)
 
-                    t_earnings = self.earnings_df[self.earnings_df['Ticker'] == t]['Earnings_Date']
-                    days_to_earn, days_since_earn = 45, 45
-                    if not t_earnings.empty:
-                        deltas = (t_earnings.dt.tz_localize(NY_TZ) - now_ny).dt.days
-                        fut = deltas[deltas >= 0]
-                        pst = deltas[deltas < 0]
-                        if not fut.empty: days_to_earn = int(fut.min())
-                        if not pst.empty: days_since_earn = int(abs(pst.max()))
+                t_earnings = self.earnings_df[self.earnings_df['Ticker'] == t]['Earnings_Date']
+                days_to_earn, days_since_earn = 45, 45
+                if not t_earnings.empty:
+                    deltas = (t_earnings.dt.tz_localize(NY_TZ) - now_ny).dt.days
+                    fut = deltas[deltas >= 0]
+                    pst = deltas[deltas < 0]
+                    if not fut.empty: days_to_earn = int(fut.min())
+                    if not pst.empty: days_since_earn = int(abs(pst.max()))
 
-                    dist_from_ema = ((entry_price - latest['EMA_200']) / latest['EMA_200']) * 100
+                dist_from_ema = ((entry_price - latest['EMA_200']) / latest['EMA_200']) * 100
 
-                    features = pd.DataFrame([{
-                        'RSI_Extreme_Value': latest['Extreme_RSI'],
-                        'Dist_From_EMA_%': dist_from_ema,
-                        'Entry_RVOL': latest['RVOL'],
-                        'Entry_ATR': latest['ATR'],
-                        'Days_To_Earnings': days_to_earn,
-                        'Days_Since_Earnings': days_since_earn,
-                        'Entry_Month': now_ny.month,
-                        'Risk_Tier': risk_tier
-                    }])[FEATURE_COLS].fillna(0)
+                features = pd.DataFrame([{
+                    'RSI_Extreme_Value': latest['Extreme_RSI'],
+                    'Dist_From_EMA_%': dist_from_ema,
+                    'Entry_RVOL': latest['RVOL'],
+                    'Entry_ATR': latest['ATR'],
+                    'Days_To_Earnings': days_to_earn,
+                    'Days_Since_Earnings': days_since_earn,
+                    'Entry_Month': now_ny.month,
+                    'Risk_Tier': risk_tier
+                }])[FEATURE_COLS].fillna(0)
 
-                    probs = self.oracle_model.predict_proba(features)[0]
-                    p_trap, p_whale = probs[0], probs[2] if len(probs) > 2 else 0.0
+                probs = self.oracle_model.predict_proba(features)[0]
+                p_trap, p_whale = probs[0], probs[2] if len(probs) > 2 else 0.0
 
-                    print(f"🎯 Signal: {t:<5} | Price: ${entry_price:.2f} | P(Trap): {p_trap:.3f} | P(Whale): {p_whale:.3f}")
+                print(f"🎯 Signal: {t:<5} | Price: ${entry_price:.2f} | P(Trap): {p_trap:.3f} | P(Whale): {p_whale:.3f}")
 
-                    if p_trap >= self.trap_thresh:
-                        print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
-                        blocked_count += 1
-                        self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
-                        continue
+                if p_trap >= self.trap_thresh:
+                    print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
+                    blocked_count += 1
+                    self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
+                    continue
 
-                    dollar_risk = self.sizing_risk_base * risk_tier
-                    risk_per_share = abs(entry_price - stop_loss)
+                dollar_risk = self.sizing_risk_base * risk_tier
+                risk_per_share = abs(entry_price - stop_loss)
 
-                    shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
-                    max_shares = int((current_equity * self.max_notional_pct) / entry_price)
+                shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
+                max_shares = int((current_equity * self.max_notional_pct) / entry_price)
 
-                    # STRICT CASH COLLAR
-                    max_cash_shares = int(available_cash / entry_price) if available_cash > 0 else 0
-                    shares = min(shares, max_shares, max_cash_shares)
+                # STRICT CASH COLLAR
+                max_cash_shares = int(available_cash / entry_price) if available_cash > 0 else 0
+                shares = min(shares, max_shares, max_cash_shares)
 
-                    if shares <= 0:
-                        if available_cash < entry_price:
-                            print(f"   ⚠️ Blocked {t}: Insufficient cash (${available_cash:,.2f}) to avoid using margin.")
-                        continue
+                if shares <= 0:
+                    if available_cash < entry_price:
+                        print(f"   ⚠️ Blocked {t}: Insufficient cash (${available_cash:,.2f}) to avoid using margin.")
+                    continue
 
-                    try:
-                        order_req = MarketOrderRequest(
-                            symbol=t, qty=shares, side=OrderSide.BUY,
-                            time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
-                            stop_loss=StopLossRequest(stop_price=round(stop_loss, 2))
-                        )
-                        self.api_retry(self.trading_client.submit_order, order_req)
-                        approved_count += 1
+                try:
+                    order_req = MarketOrderRequest(
+                        symbol=t, qty=shares, side=OrderSide.BUY,
+                        time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
+                        stop_loss=StopLossRequest(stop_price=round(stop_loss, 2))
+                    )
+                    self.api_retry(self.trading_client.submit_order, order_req)
+                    approved_count += 1
 
-                        available_cash -= (shares * entry_price)
+                    available_cash -= (shares * entry_price)
 
-                        self.log_comprehensive_feature_snapshot(
-                            t, features, p_trap, p_whale, action="BOUGHT",
-                            extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
-                        )
+                    self.log_comprehensive_feature_snapshot(
+                        t, features, p_trap, p_whale, action="BOUGHT",
+                        extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
+                    )
 
-                        exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
-                        rsi_slope_str = "🟩 UP" if latest['RSI'] > df['RSI'].iloc[-2] else "🟥 DN"
-                        macd_slope_str = "🟩 UP" if latest['MACD'] > df['MACD'].iloc[-2] else "🟥 DN"
-                        macd_sig_str = "🟩 ABV" if latest['MACD'] > latest['MACD_Signal'] else "🟥 BLW"
+                    exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
 
-                        self.state['position_meta'][t] = {
-                            'exit_rule': exit_rule,
-                            'entry_time': now_ny.strftime('%Y-%m-%d %H:%M:%S'),
-                            'avg_entry': entry_price,
-                            'sl_price': stop_loss,
-                            'Entry_RSI': float(latest['RSI']),
-                            'E_RSI_Slp': rsi_slope_str,
-                            'Entry_MACD': float(latest['MACD']),
-                            'E_MACD_Slp': macd_slope_str,
-                            'E_MACD_vs_Sig': macd_sig_str,
-                            'Entry_RVOL': float(latest['RVOL']),
-                            'Dist_from_EMA': float(dist_from_ema)
-                        }
-                        self.state.setdefault('burned_regimes', {}).setdefault(t, []).append(current_L_ID)
-                        self.save_state()
+                    self.state['position_meta'][t] = {
+                        'exit_rule': exit_rule,
+                        'entry_time': now_ny.strftime('%Y-%m-%d %H:%M:%S'),
+                        'avg_entry': entry_price,
+                        'sl_price': stop_loss,
+                        'Entry_RSI': float(latest['RSI']),
+                        'Entry_MACD': float(latest['MACD']),
+                        'Entry_RVOL': float(latest['RVOL']),
+                        'Dist_from_EMA': float(dist_from_ema)
+                    }
+                    self.state.setdefault('burned_regimes', {}).setdefault(t, []).append(current_L_ID)
+                    self.save_state()
 
-                        print(f"   ✅ BOUGHT: {shares} shares of {t} | Stop @ ${stop_loss:.2f} | Target: {exit_rule}")
-                    except Exception as e:
-                        print(f"   ❌ Execution Error: {e}")
+                    print(f"   ✅ BOUGHT: {shares} shares of {t} | Stop @ ${stop_loss:.2f} | Target: {exit_rule}")
+                except Exception as e:
+                    print(f"   ❌ Execution Error: {e}")
 
         # ─── 4. CONSOLIDATED POST-EXECUTION REPORTING (ACCOUNT SNAPSHOT) ───
 
@@ -677,18 +639,15 @@ class AlpacaExecutionEngine:
         print(f"  • Buying Power         : ${float(account.buying_power):,.2f}")
         print(f"  • Non-Margin Buying Pwr: ${float(non_margin_bp):,.2f}")
         print(f"  • Drawdown Governor    : {drawdown * 100:.2f}% | Mode: {'🛡️ DEFENSIVE' if is_defensive else '🟢 NORMAL'}")
-        if is_blackout_active:
-            print(f"  • Macro Block Status   : 🛑 BLOCKED | {blackout_reason}")
-        else:
-            print(f"  • Scan Result          : Approved: {approved_count} | Blocked: {blocked_count}")
+        print(f"  • Scan Result          : Approved: {approved_count} | Blocked: {blocked_count}")
         print("=" * 90)
 
         if not updated_positions:
             print("📦 Open Positions: 0 (No active trades)")
         else:
             print(f"📦 Open Positions ({len(updated_positions)} / {self.max_positions}):")
-            print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Current':<10} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'Cur_RSI':<9} {'E_RSI_Slp':<10} {'E_MACD_Slp':<11} {'E_MACD_vs_Sig':<14} {'E_Dist_200':<11} {'Chart_Link'}")
-            print("-" * 165)
+            print(f"{'Ticker':<7} {'Entry_Time':<19} {'Qty':<5} {'Avg_Entry':<10} {'Curr_Price':<11} {'SL':<8} {'Unreal_PnL':<11} {'Ret_%':<8} {'E_RSI':<7} {'Curr_RSI':<9} {'Chart_Link'}")
+            print("-" * 125)
 
             total_unrealized_pnl = 0.0
 
@@ -710,19 +669,25 @@ class AlpacaExecutionEngine:
 
                 e_rsi = meta.get('Entry_RSI')
                 rsi_str = f"{e_rsi:.1f}" if e_rsi is not None else "N/A"
-                rsi_slp = meta.get('E_RSI_Slp', 'N/A')
-                macd_slp = meta.get('E_MACD_Slp', 'N/A')
-                macd_sig = meta.get('E_MACD_vs_Sig', 'N/A')
-                e_dist = meta.get('Dist_from_EMA')
-                dist_str = f"{e_dist:+.1f}%" if e_dist is not None else "N/A"
+
+                # Check if current price is below entry and apply red ANSI formatting
+                sl_val = meta.get('sl_price', 0.0)
+                if sl_val > 0:
+                    base_sl = f"${sl_val:.2f}"
+                    if curr < entry:
+                        sl_padded = f"\033[91m{base_sl:<8}\033[0m"
+                    else:
+                        sl_padded = f"{base_sl:<8}"
+                else:
+                    sl_padded = f"{'N/A':<8}"
 
                 tv_url = f"https://www.tradingview.com/chart/QxnQNEPO/?symbol={t}"
 
-                print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<9.2f} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {curr_rsi_val:<9} {rsi_slp:<10} {macd_slp:<11} {macd_sig:<14} {dist_str:<11} {tv_url}")
+                print(f"{t:<7} {entry_time:<19} {int(qty):<5} ${entry:<9.2f} ${curr:<10.2f} {sl_padded} ${pnl:<10.2f} {pnl_pct:>+6.2f}%  {rsi_str:<7} {curr_rsi_val:<9} {tv_url}")
 
-            print("-" * 165)
+            print("-" * 125)
             print(f"TOTAL UNREALIZED PnL: ${total_unrealized_pnl:,.2f}")
-        print("=" * 165 + "\n")
+        print("=" * 125 + "\n")
 
     def run_daemon(self):
         self.print_startup_banner()
