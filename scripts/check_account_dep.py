@@ -1,7 +1,7 @@
 """
 ===============================================================================
 SCRIPT: READ-ONLY ACCOUNT SNAPSHOT & LIVE RSI MONITOR
-LOCATION: scripts/check_account.py
+LOCATION: scripts/check_account_dep.py
 ===============================================================================
 """
 

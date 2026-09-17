@@ -5,7 +5,8 @@
             4
         ],
         "IBIT": [
-            4
+            4,
+            8
         ],
         "LITE": [
             5
@@ -100,71 +101,10 @@
         ],
         "INTC": [
             4
+        ],
+        "AGCO": [
+            6
         ]
     },
-    "position_meta": {
-        "WBD": {
-            "exit_rule": "RSI_60_WHALE",
-            "entry_time": "2026-09-09 14:30:05",
-            "avg_entry": 28.035,
-            "sl_price": 27.0,
-            "Entry_RSI": 35.54795618169234,
-            "E_RSI_Slp": "🟩 UP",
-            "Entry_MACD": -0.10578053614487004,
-            "E_MACD_Slp": "🟩 UP",
-            "E_MACD_vs_Sig": "🟥 BLW",
-            "Entry_RVOL": 0.7654373683806461,
-            "Dist_from_EMA": 0.4877209396083936
-        },
-        "C": {
-            "exit_rule": "RSI_50",
-            "entry_time": "2026-09-14 15:57:59",
-            "avg_entry": 136.29,
-            "sl_price": 132.0,
-            "Entry_RSI": 47.86802238220059,
-            "Entry_MACD": -0.6910912131309601,
-            "Entry_RVOL": 4.853745639297562,
-            "Dist_from_EMA": 0.9511882599581717
-        },
-        "MRK": {
-            "exit_rule": "RSI_50",
-            "entry_time": "2026-09-15 11:30:04",
-            "avg_entry": 143.74,
-            "sl_price": 142.0,
-            "Entry_RSI": 39.01479083676741,
-            "Entry_MACD": -0.8492298467588171,
-            "Entry_RVOL": 0.3060520158191992,
-            "Dist_from_EMA": 0.056161572723086806
-        },
-        "PFE": {
-            "exit_rule": "RSI_50",
-            "entry_time": "2026-09-15 11:30:04",
-            "avg_entry": 27.6,
-            "sl_price": 27.0,
-            "Entry_RSI": 45.8182082683434,
-            "Entry_MACD": -0.0736580033145664,
-            "Entry_RVOL": 0.9095655200417658,
-            "Dist_from_EMA": 0.42727149252486396
-        },
-        "NEM": {
-            "exit_rule": "RSI_50",
-            "entry_time": "2026-09-15 12:30:04",
-            "avg_entry": 122.6,
-            "sl_price": 121.0,
-            "Entry_RSI": 38.709948952004254,
-            "Entry_MACD": -1.3687896668040338,
-            "Entry_RVOL": 0.3233252680802711,
-            "Dist_from_EMA": 1.2590115119357492
-        },
-        "INTC": {
-            "exit_rule": "RSI_50",
-            "entry_time": "2026-09-15 12:30:04",
-            "avg_entry": 98.11,
-            "sl_price": 94.0,
-            "Entry_RSI": 44.18665097873008,
-            "Entry_MACD": -0.8496808708035388,
-            "Entry_RVOL": 0.48368185581196144,
-            "Dist_from_EMA": 1.8533220904810799
-        }
-    }
+    "position_meta": {}
 }

@@ -1,7 +1,7 @@
 """
 ===============================================================================
 SCRIPT: COMPREHENSIVE TRADE PERFORMANCE SUMMARY
-LOCATION: scripts/trade_summary.py
+LOCATION: scripts/trade_summary_dep.py
 DESCRIPTION: Ingests the Alpaca_Live_Ledger.xlsx file and generates a detailed
              metrics breakdown including win rate, profit factor, and expectancy.
 ===============================================================================

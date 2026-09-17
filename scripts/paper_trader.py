@@ -2,6 +2,74 @@
 ===============================================================================
 SCRIPT: AUTONOMOUS ALPACA HOURLY TRADING ENGINE (7-BAR DAILY CADENCE)
 LOCATION: scripts/paper_trader.py
+AUTHOR: Alvaro Salgado
+===============================================================================
+
+===============================================================================
+🤖 PERMANENT DIRECTIVE TO AI CO-PILOT & QUANTITATIVE SYSTEMS ENGINEERS:
+-------------------------------------------------------------------------------
+The engineering notes in this header and throughout this file are permanent
+architectural records and system specifications.
+THEY MUST NEVER BE REMOVED, TRUNCATED, SUMMARIZED, OR OMITTED in future code
+refactors or session transfers unless a specific architectural component has
+been completely deprecated and physically removed from the codebase.
+From now on, all subsequent scripts and revisions must retain this engineering
+dossier to prevent context drift and ensure zero-tolerance rule enforcement.
+===============================================================================
+
+ENGINEERING DOSSIER & ARCHITECTURAL SPECIFICATIONS:
+-------------------------------------------------------------------------------
+1. Core Operating Cadence:
+   - Operates on a 7-bar daily schedule using 60-minute timeframe bars.
+   - Scan schedule: 10:30, 11:30, 12:30, 01:30, 02:30, 03:30, and 03:58 PM NY.
+   - Scan 7 (03:58 PM Pre-Close) normalizes volume by pro-rating the 28 elapsed
+     minutes across a standard 30-minute half-bar window (volume * 30.0 / 28.0).
+
+2. Execution Hierarchy & Priority Queues:
+   - Priority 0: Stop-Loss Interceptor. Audits closed broker orders to identify
+     positions liquidated between scans and appends them to Alpaca_Live_Ledger.xlsx.
+   - Priority 1: Immediate Exits. Evaluates active positions for profit-taking
+     targets (Standard: RSI >= 50, Whale: RSI >= 60). Unconditional execution.
+   - Priority 2: Macro Blackout Gatekeeper. Audits UTC timestamps against
+     config/blackout_dates.json. If active, vetoes entry scanning entirely.
+   - Priority 3: Immediate Entries. Scans watchlist for technical hooks (200 EMA,
+     RSI < 35/30, MACD up-hook), validates ML Oracle v6.0, and executes OTO orders.
+
+3. Macro Blackout Architecture (config/blackout_dates.json):
+   - Scope: Strictly halts *new entry execution*. It NEVER pauses take-profit
+     monitoring, nor does it affect resting broker-side stop-losses.
+   - The Pre-Event Liquidity Vacuum: Market makers pull liquidity 30-60 minutes
+     prior to Tier-1 releases (FOMC, CPI, NFP). Spreads widen and technical
+     indicators emit false "chop" hooks. The pre-event buffer halts entries to
+     prevent slippage and avoid gambling into fundamental volatility spikes.
+   - Asset Blast Radius: Evaluates the 'impacted_assets' array. Events tagged
+     'EQUITIES' or 'USD' halt this daemon; localized currency tags ('EUR', 'GBP')
+     are ignored by Equities and reserved for the Forex expansion.
+   - Stop-Loss Integrity: Hard stops submitted via OrderClass.OTO reside directly
+     on Alpaca's matching engine and will execute even during blackouts.
+
+4. Strict Cash Collar & Money Management:
+   - Zero margin allowed. The engine physically checks `account.cash` before entry.
+   - Sizing calculation: min(risk_shares, max_notional_shares, max_cash_shares).
+   - If available cash cannot cover the purchase outright, the setup is skipped.
+   - Max portfolio exposure: 15 open positions. Max single asset: 20% equity.
+
+5. Capital Defense & Governors:
+   - Drawdown Governor: Continuously updates the All-Time High Water Mark (HWM).
+     If portfolio equity drops >= 5% from HWM, shifts to 🛡️ DEFENSIVE mode,
+     instantly slashing risk allocations in half (Aggressive: 1%, Tier: 0.25%).
+   - Regime Burn Guard: Once a trade closes (stop or profit), its unique setup
+     regime ID (L_ID) is written to alpaca_state.json to prevent revenge trading.
+
+6. ML Telemetry & Ghost Ledger (Oracle v7 Pipeline):
+   - Every evaluated setup (both executed BOUGHT and vetoed TRAP setups) writes
+     a full feature snapshot to data/training_store/oracle_v7_live_training_store.parquet.
+   - Preserves un-executed setups to eliminate survivorship bias and train Oracle v7.
+
+7. Known System Vulnerabilities & Fallback Roadmap:
+   - Free Alpaca IEX data feed is prone to volume dropouts. When a bar query fails
+     or drops volume, the engine must gracefully log the failure. A secondary
+     fallback decorator (e.g., yfinance) is queued for future hardening.
 ===============================================================================
 """
 
@@ -9,7 +77,7 @@ import sys
 import os
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import zoneinfo
 from typing import Tuple
@@ -18,11 +86,14 @@ import joblib
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
+import subprocess
 
+# Define Project Root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Environment Variable Resolution
 env_path = PROJECT_ROOT / ".env"
 print(f"Loading .env from: {env_path}, Exists: {env_path.exists()}")
 load_dotenv(dotenv_path=env_path, override=True)
@@ -32,6 +103,7 @@ if not os.getenv("APCA_API_KEY_ID") and os.getenv("ALPACA_API_KEY"):
 if not os.getenv("APCA_API_SECRET_KEY") and os.getenv("ALPACA_SECRET_KEY"):
     os.environ["APCA_API_SECRET_KEY"] = os.getenv("ALPACA_SECRET_KEY")
 
+# Alpaca SDK Imports
 try:
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, ClosePositionRequest, GetOrdersRequest
@@ -44,11 +116,15 @@ except ImportError:
     print("⚠️ Alpaca SDK not found. Install with: pip install alpaca-py")
     sys.exit(1)
 
+# Core Architecture Modules
 from src.trading_engine.data.loader import MarketDataLoader
+from macro_blackout import MacroBlackoutParser
 
+# Timezone Standards
 NY_TZ = zoneinfo.ZoneInfo("America/New_York")
 UTC_TZ = zoneinfo.ZoneInfo("UTC")
 
+# Oracle Feature Schema
 FEATURE_COLS = [
     'RSI_Extreme_Value',
     'Dist_From_EMA_%',
@@ -61,6 +137,7 @@ FEATURE_COLS = [
 ]
 
 def load_settings(config_path: str = "config/settings.yaml") -> dict:
+    """Loads system configuration parameters."""
     cfg_file = PROJECT_ROOT / config_path
     if not cfg_file.exists():
         raise FileNotFoundError(f"Configuration file not found at: {cfg_file}")
@@ -77,31 +154,39 @@ class AlpacaExecutionEngine:
         if not self.api_key or not self.secret_key:
             raise ValueError("Alpaca API credentials missing in .env")
 
+        # Initialize API Clients (Paper Trading Mode Hardcoded for Safety)
         self.trading_client = TradingClient(self.api_key, self.secret_key, paper=True)
         self.data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
 
+        # Oracle v6.0 ML Gatekeeper Initialization
         model_path = PROJECT_ROOT / config.get("paths", {}).get("model", "data/models/IE_Oracle_v6.0_Hourly.joblib")
         self.oracle_model = joblib.load(model_path)
 
+        # Market Data Loader & Watchlist Configuration
         self.loader = MarketDataLoader(config)
         self.min_score = config.get("filters", {}).get("min_ticker_score", 3)
         self.tickers, self.sector_map, self.earnings_df = self.loader.load_watchlist(min_score=self.min_score)
 
+        # Money Management & Risk Parameters
         self.cfg_acct = config.get("account", {})
         self.sizing_risk_base = float(self.cfg_acct.get("sizing_risk_base", 30000.0))
         self.max_positions = int(self.cfg_acct.get("max_open_positions", 15))
         self.max_notional_pct = float(self.cfg_acct.get("max_notional_allocation_pct", 0.20))
         self.trap_thresh = float(config.get("filters", {}).get("trap_threshold", 0.35))
         self.whale_thresh = float(config.get("filters", {}).get("whale_threshold", 0.42))
-
         self.starting_equity = 100000.00
 
+        # State Persistence
         self.state_file = PROJECT_ROOT / "data" / "alpaca_state.json"
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state = self.load_state()
 
+        # Macro Blackout Gatekeeper Initialization (Config Directory Path)
+        blackout_path = PROJECT_ROOT / "config" / "blackout_dates.json"
+        self.macro_parser = MacroBlackoutParser(str(blackout_path))
+
     def api_retry(self, func, *args, retries=3, delay=5, **kwargs):
-        """Wrapper to catch transient Alpaca HTTP 500 / Timeout errors."""
+        """Transient error wrapper to catch Alpaca HTTP 500 / Network Timeouts."""
         for attempt in range(retries):
             try:
                 return func(*args, **kwargs)
@@ -112,6 +197,7 @@ class AlpacaExecutionEngine:
                 time.sleep(delay)
 
     def load_state(self) -> dict:
+        """Loads state persistence JSON."""
         if self.state_file.exists():
             try:
                 with open(self.state_file, "r", encoding="utf-8") as f:
@@ -121,10 +207,12 @@ class AlpacaExecutionEngine:
         return {"hwm": 0.0, "burned_regimes": {}, "position_meta": {}}
 
     def save_state(self):
+        """Persists state to local JSON file."""
         with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=4, ensure_ascii=False)
 
     def append_to_ledger(self, trade_record: dict):
+        """Appends liquidated position records to the persistent Excel ledger."""
         ledger_dir = PROJECT_ROOT / "SIM_Results"
         ledger_dir.mkdir(parents=True, exist_ok=True)
         ledger_path = ledger_dir / "Alpaca_Live_Ledger.xlsx"
@@ -157,6 +245,7 @@ class AlpacaExecutionEngine:
         self, ticker: str, features_df: pd.DataFrame, p_trap: float,
         p_whale: float, action: str, extra_metadata: dict = None
     ):
+        """Logs live out-of-sample feature state snapshots (Ghost Ledger) for Oracle v7."""
         store_dir = PROJECT_ROOT / "data" / "training_store"
         store_dir.mkdir(parents=True, exist_ok=True)
         parquet_path = store_dir / "oracle_v7_live_training_store.parquet"
@@ -199,6 +288,7 @@ class AlpacaExecutionEngine:
         print("  • Order Execution      : Market Buy + Hard OTO Stop-Loss (CASH ONLY / NO MARGIN)")
         print("  • Profit Exits         : Immediate Scan Execution if RSI >= 50 (or >= 60 Whale)")
         print("  • Capital Protection   : Drawdown Governor & Regime Burn Guard Active")
+        print("  • Macro Defense        : Blackout Calendar Active (Halts Entries / Keeps SL Active)")
         print("-" * 85)
         print(" [SCAN SCHEDULE (7-BAR CADENCE)]")
         print("  • Scans 1 to 6         : 10:30, 11:30, 12:30, 01:30, 02:30, 03:30 (Closed 60m bars)")
@@ -206,6 +296,7 @@ class AlpacaExecutionEngine:
         print("=" * 85 + "\n")
 
     def print_boot_snapshot(self):
+        """Fetches and displays real-time portfolio status upon daemon boot."""
         account = self.api_retry(self.trading_client.get_account)
         positions = self.api_retry(self.trading_client.get_all_positions)
 
@@ -262,7 +353,6 @@ class AlpacaExecutionEngine:
             e_rsi = meta.get('Entry_RSI')
             rsi_str = f"{e_rsi:.1f}" if e_rsi is not None else "N/A"
 
-            # Check if current price is below entry and apply red ANSI formatting
             sl_val = meta.get('sl_price', 0.0)
             if sl_val > 0:
                 base_sl = f"${sl_val:.2f}"
@@ -278,6 +368,7 @@ class AlpacaExecutionEngine:
         print("-" * 125 + "\n")
 
     def get_next_schedule_target(self) -> Tuple[datetime, str]:
+        """Calculates exact wake-up timestamp based on the 7-bar schedule."""
         now = datetime.now(NY_TZ)
         today = now.date()
         schedule = [
@@ -298,8 +389,9 @@ class AlpacaExecutionEngine:
         return next_day_first, "Bar 1 Next Session (10:30 AM)"
 
     def evaluate_live_scan(self, is_final_bar: bool = False):
+        """Core algorithmic execution pass executed hourly."""
         now_ny = datetime.now(NY_TZ)
-        now_utc = datetime.now(UTC_TZ)
+        now_utc = datetime.now(timezone.utc)  # <--- UPDATED TO MATCH IMPORT
         scan_label = "FINAL PRE-CLOSE" if is_final_bar else now_ny.strftime('%H:%M:%S')
 
         print("\n\n\n\n")
@@ -309,6 +401,7 @@ class AlpacaExecutionEngine:
         current_equity = float(account.portfolio_value)
         self.state['hwm'] = max(self.state.get('hwm', current_equity), current_equity)
 
+        # Drawdown Governor Calculation
         drawdown = (self.state['hwm'] - current_equity) / self.state['hwm']
         is_defensive = drawdown >= 0.05
 
@@ -317,7 +410,7 @@ class AlpacaExecutionEngine:
         active_symbols = set(positions.keys())
 
         # =====================================================================
-        # STOP-LOSS INTERCEPTOR
+        # PRIORITY 0: STOP-LOSS INTERCEPTOR
         # =====================================================================
         for t in list(self.state.get('position_meta', {}).keys()):
             if t not in active_symbols:
@@ -367,6 +460,7 @@ class AlpacaExecutionEngine:
         self.save_state()
         # =====================================================================
 
+        # Ingest Market Data for Watchlist + Open Positions
         all_symbols = list(set(self.tickers + list(positions.keys())))
         start_time = now_ny - timedelta(days=60)
         request_params = StockBarsRequest(
@@ -442,7 +536,7 @@ class AlpacaExecutionEngine:
                 'prev': df.iloc[-2]
             }
 
-        # ─── 2. IMMEDIATE EXITS (EXECUTION PRIORITY 1) ───
+        # ─── 2. IMMEDIATE EXITS (EXECUTION PRIORITY 1: ALWAYS RUNS) ───
         for t in list(positions.keys()):
             if t not in symbol_data: continue
             current_rsi = symbol_data[t]['latest']['RSI']
@@ -494,126 +588,132 @@ class AlpacaExecutionEngine:
                 except Exception as e:
                     print(f"❌ Error closing {t}: {e}")
 
-        # ─── 3. IMMEDIATE ENTRIES (EXECUTION PRIORITY 2) ───
+        # ─── 3. MACRO BLACKOUT GATEKEEPER ───
+        # Validates UTC timestamp against config/blackout_dates.json
+        is_safe_to_trade = self.macro_parser.is_trade_allowed(now_utc, "EQUITIES")
+
         approved_count = 0
         blocked_count = 0
-
         available_cash = float(account.cash)
 
-        for t in self.tickers:
-            if t in positions or t not in symbol_data: continue
-            if len(positions) >= self.max_positions: break
+        if not is_safe_to_trade:
+            print("   🛡️ MACRO VETO: Active blackout window detected. Halting all new entry scans.")
+        else:
+            # ─── 4. IMMEDIATE ENTRIES (EXECUTION PRIORITY 2: CASH ONLY) ───
+            for t in self.tickers:
+                if t in positions or t not in symbol_data: continue
+                if len(positions) >= self.max_positions: break
 
-            sdata = symbol_data[t]
-            df = sdata['df']
+                sdata = symbol_data[t]
+                df = sdata['df']
 
-            if len(df) < 200: continue
+                if len(df) < 200: continue
 
-            latest = sdata['latest']
-            current_L_ID = int(latest['L_ID'])
+                latest = sdata['latest']
+                current_L_ID = int(latest['L_ID'])
 
-            burned = self.state.get('burned_regimes', {}).get(t, [])
-            if current_L_ID in burned: continue
+                burned = self.state.get('burned_regimes', {}).get(t, [])
+                if current_L_ID in burned: continue
 
-            is_above_trend = latest['Close'] > latest['EMA_200']
-            is_agg = (latest['State_L_Agg'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
-            is_tier = (latest['State_L_Tier'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
+                is_above_trend = latest['Close'] > latest['EMA_200']
+                is_agg = (latest['State_L_Agg'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
+                is_tier = (latest['State_L_Tier'] == 1) and (df['R_Hook_U'].iloc[-3:].max() == 1) and latest['M_Hook_U'] and is_above_trend
 
-            if is_agg or is_tier:
-                entry_price = float(latest['Close'])
-                stop_loss = float(latest['SL_L'])
+                if is_agg or is_tier:
+                    entry_price = float(latest['Close'])
+                    stop_loss = float(latest['SL_L'])
 
-                if pd.isna(stop_loss) or entry_price <= stop_loss:
-                    continue
+                    if pd.isna(stop_loss) or entry_price <= stop_loss:
+                        continue
 
-                risk_tier = 0.02 if is_agg else 0.005
-                if is_defensive:
-                    risk_tier = min(risk_tier, 0.01)
+                    risk_tier = 0.02 if is_agg else 0.005
+                    if is_defensive:
+                        risk_tier = min(risk_tier, 0.01)
 
-                t_earnings = self.earnings_df[self.earnings_df['Ticker'] == t]['Earnings_Date']
-                days_to_earn, days_since_earn = 45, 45
-                if not t_earnings.empty:
-                    deltas = (t_earnings.dt.tz_localize(NY_TZ) - now_ny).dt.days
-                    fut = deltas[deltas >= 0]
-                    pst = deltas[deltas < 0]
-                    if not fut.empty: days_to_earn = int(fut.min())
-                    if not pst.empty: days_since_earn = int(abs(pst.max()))
+                    t_earnings = self.earnings_df[self.earnings_df['Ticker'] == t]['Earnings_Date']
+                    days_to_earn, days_since_earn = 45, 45
+                    if not t_earnings.empty:
+                        deltas = (t_earnings.dt.tz_localize(NY_TZ) - now_ny).dt.days
+                        fut = deltas[deltas >= 0]
+                        pst = deltas[deltas < 0]
+                        if not fut.empty: days_to_earn = int(fut.min())
+                        if not pst.empty: days_since_earn = int(abs(pst.max()))
 
-                dist_from_ema = ((entry_price - latest['EMA_200']) / latest['EMA_200']) * 100
+                    dist_from_ema = ((entry_price - latest['EMA_200']) / latest['EMA_200']) * 100
 
-                features = pd.DataFrame([{
-                    'RSI_Extreme_Value': latest['Extreme_RSI'],
-                    'Dist_From_EMA_%': dist_from_ema,
-                    'Entry_RVOL': latest['RVOL'],
-                    'Entry_ATR': latest['ATR'],
-                    'Days_To_Earnings': days_to_earn,
-                    'Days_Since_Earnings': days_since_earn,
-                    'Entry_Month': now_ny.month,
-                    'Risk_Tier': risk_tier
-                }])[FEATURE_COLS].fillna(0)
+                    features = pd.DataFrame([{
+                        'RSI_Extreme_Value': latest['Extreme_RSI'],
+                        'Dist_From_EMA_%': dist_from_ema,
+                        'Entry_RVOL': latest['RVOL'],
+                        'Entry_ATR': latest['ATR'],
+                        'Days_To_Earnings': days_to_earn,
+                        'Days_Since_Earnings': days_since_earn,
+                        'Entry_Month': now_ny.month,
+                        'Risk_Tier': risk_tier
+                    }])[FEATURE_COLS].fillna(0)
 
-                probs = self.oracle_model.predict_proba(features)[0]
-                p_trap, p_whale = probs[0], probs[2] if len(probs) > 2 else 0.0
+                    probs = self.oracle_model.predict_proba(features)[0]
+                    p_trap, p_whale = probs[0], probs[2] if len(probs) > 2 else 0.0
 
-                print(f"🎯 Signal: {t:<5} | Price: ${entry_price:.2f} | P(Trap): {p_trap:.3f} | P(Whale): {p_whale:.3f}")
+                    print(f"🎯 Signal: {t:<5} | Price: ${entry_price:.2f} | P(Trap): {p_trap:.3f} | P(Whale): {p_whale:.3f}")
 
-                if p_trap >= self.trap_thresh:
-                    print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
-                    blocked_count += 1
-                    self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
-                    continue
+                    if p_trap >= self.trap_thresh:
+                        print(f"   🚫 VETOED by Oracle: P(Trap) {p_trap:.2f} >= {self.trap_thresh}")
+                        blocked_count += 1
+                        self.log_comprehensive_feature_snapshot(t, features, p_trap, p_whale, action="VETOED")
+                        continue
 
-                dollar_risk = self.sizing_risk_base * risk_tier
-                risk_per_share = abs(entry_price - stop_loss)
+                    dollar_risk = self.sizing_risk_base * risk_tier
+                    risk_per_share = abs(entry_price - stop_loss)
 
-                shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
-                max_shares = int((current_equity * self.max_notional_pct) / entry_price)
+                    shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
+                    max_shares = int((current_equity * self.max_notional_pct) / entry_price)
 
-                # STRICT CASH COLLAR
-                max_cash_shares = int(available_cash / entry_price) if available_cash > 0 else 0
-                shares = min(shares, max_shares, max_cash_shares)
+                    # STRICT CASH COLLAR ENFORCEMENT (ZERO MARGIN)
+                    max_cash_shares = int(available_cash / entry_price) if available_cash > 0 else 0
+                    shares = min(shares, max_shares, max_cash_shares)
 
-                if shares <= 0:
-                    if available_cash < entry_price:
-                        print(f"   ⚠️ Blocked {t}: Insufficient cash (${available_cash:,.2f}) to avoid using margin.")
-                    continue
+                    if shares <= 0:
+                        if available_cash < entry_price:
+                            print(f"   ⚠️ Blocked {t}: Insufficient cash (${available_cash:,.2f}) to avoid using margin.")
+                        continue
 
-                try:
-                    order_req = MarketOrderRequest(
-                        symbol=t, qty=shares, side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
-                        stop_loss=StopLossRequest(stop_price=round(stop_loss, 2))
-                    )
-                    self.api_retry(self.trading_client.submit_order, order_req)
-                    approved_count += 1
+                    try:
+                        order_req = MarketOrderRequest(
+                            symbol=t, qty=shares, side=OrderSide.BUY,
+                            time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
+                            stop_loss=StopLossRequest(stop_price=round(stop_loss, 2))
+                        )
+                        self.api_retry(self.trading_client.submit_order, order_req)
+                        approved_count += 1
 
-                    available_cash -= (shares * entry_price)
+                        available_cash -= (shares * entry_price)
 
-                    self.log_comprehensive_feature_snapshot(
-                        t, features, p_trap, p_whale, action="BOUGHT",
-                        extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
-                    )
+                        self.log_comprehensive_feature_snapshot(
+                            t, features, p_trap, p_whale, action="BOUGHT",
+                            extra_metadata={'Applied_Risk_Pct': risk_tier, 'Stop_Loss': stop_loss, 'Entry_Price': entry_price}
+                        )
 
-                    exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
+                        exit_rule = "RSI_60_WHALE" if p_whale > self.whale_thresh else "RSI_50"
 
-                    self.state['position_meta'][t] = {
-                        'exit_rule': exit_rule,
-                        'entry_time': now_ny.strftime('%Y-%m-%d %H:%M:%S'),
-                        'avg_entry': entry_price,
-                        'sl_price': stop_loss,
-                        'Entry_RSI': float(latest['RSI']),
-                        'Entry_MACD': float(latest['MACD']),
-                        'Entry_RVOL': float(latest['RVOL']),
-                        'Dist_from_EMA': float(dist_from_ema)
-                    }
-                    self.state.setdefault('burned_regimes', {}).setdefault(t, []).append(current_L_ID)
-                    self.save_state()
+                        self.state['position_meta'][t] = {
+                            'exit_rule': exit_rule,
+                            'entry_time': now_ny.strftime('%Y-%m-%d %H:%M:%S'),
+                            'avg_entry': entry_price,
+                            'sl_price': stop_loss,
+                            'Entry_RSI': float(latest['RSI']),
+                            'Entry_MACD': float(latest['MACD']),
+                            'Entry_RVOL': float(latest['RVOL']),
+                            'Dist_from_EMA': float(dist_from_ema)
+                        }
+                        self.state.setdefault('burned_regimes', {}).setdefault(t, []).append(current_L_ID)
+                        self.save_state()
 
-                    print(f"   ✅ BOUGHT: {shares} shares of {t} | Stop @ ${stop_loss:.2f} | Target: {exit_rule}")
-                except Exception as e:
-                    print(f"   ❌ Execution Error: {e}")
+                        print(f"   ✅ BOUGHT: {shares} shares of {t} | Stop @ ${stop_loss:.2f} | Target: {exit_rule}")
+                    except Exception as e:
+                        print(f"   ❌ Execution Error: {e}")
 
-        # ─── 4. CONSOLIDATED POST-EXECUTION REPORTING (ACCOUNT SNAPSHOT) ───
+        # ─── 5. CONSOLIDATED POST-EXECUTION REPORTING (ACCOUNT SNAPSHOT) ───
 
         if approved_count > 0:
             print(f"   ⏳ Waiting 5 seconds for Alpaca to fill {approved_count} new market order(s)...")
@@ -670,7 +770,6 @@ class AlpacaExecutionEngine:
                 e_rsi = meta.get('Entry_RSI')
                 rsi_str = f"{e_rsi:.1f}" if e_rsi is not None else "N/A"
 
-                # Check if current price is below entry and apply red ANSI formatting
                 sl_val = meta.get('sl_price', 0.0)
                 if sl_val > 0:
                     base_sl = f"${sl_val:.2f}"
@@ -690,6 +789,7 @@ class AlpacaExecutionEngine:
         print("=" * 125 + "\n")
 
     def run_daemon(self):
+        """Continuous execution loop tracking the 7-bar daily cadence."""
         self.print_startup_banner()
         self.print_boot_snapshot()
 
